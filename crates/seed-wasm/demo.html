@@ -146,6 +146,7 @@
             <button onclick="loadExample('nested')">Nested Frames</button>
             <button onclick="loadExample('card')">Card Layout</button>
             <button onclick="loadExample('tokens')">With Tokens</button>
+            <button onclick="loadExample('gradient')">Gradients</button>
           </div>
           <textarea id="source" spellcheck="false">Frame:
   fill: #0066cc
@@ -254,7 +255,30 @@
   Text Subtitle:
     content: "Using design tokens"
     color: $colors.secondary
-    fontSize: 12px`
+    fontSize: 12px`,
+      gradient: `Frame LinearGradient:
+  fill: linear-gradient(90deg, #ff6b6b, #4ecdc4)
+  constraints:
+    - width = 280px
+    - height = 80px
+
+Frame RadialGradient:
+  fill: radial-gradient(circle, #667eea, #764ba2)
+  constraints:
+    - width = 280px
+    - height = 80px
+
+Frame SunsetGradient:
+  fill: linear-gradient(to bottom, #ff7e5f, #feb47b)
+  constraints:
+    - width = 280px
+    - height = 80px
+
+Frame RainbowGradient:
+  fill: linear-gradient(to right, #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #8b00ff)
+  constraints:
+    - width = 280px
+    - height = 80px`
     };
 
     window.loadExample = function(name) {

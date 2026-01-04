@@ -3,15 +3,22 @@
 use seed_core::{
     Document, ExportError,
     ast::{Element, FrameElement, TextElement, Property, PropertyValue},
-    types::Color,
+    types::{Color, Gradient, LinearGradient, RadialGradient, ConicGradient, GradientStop},
 };
 use seed_layout::{LayoutTree, LayoutNodeId};
+use std::collections::HashMap;
 
 /// Export a document to SVG.
 pub fn export(doc: &Document, layout: &LayoutTree) -> Result<String, ExportError> {
     let bounds = layout.content_bounds();
     let width = bounds.width.max(1.0);
     let height = bounds.height.max(1.0);
+
+    // First pass: collect all gradients
+    let mut gradient_collector = GradientCollector::new();
+    for element in &doc.elements {
+        gradient_collector.collect_from_element(element);
+    }
 
     let mut svg = String::new();
 
@@ -23,11 +30,21 @@ pub fn export(doc: &Document, layout: &LayoutTree) -> Result<String, ExportError
         width, height, width, height
     ));
 
+    // Write gradient definitions if any
+    if !gradient_collector.gradients.is_empty() {
+        svg.push_str("  <defs>\n");
+        for (id, gradient) in &gradient_collector.gradients {
+            write_gradient_def(&mut svg, id, gradient);
+        }
+        svg.push_str("  </defs>\n");
+    }
+
     // Export elements
     let mut builder = SvgBuilder {
         svg: &mut svg,
         layout,
         indent: 1,
+        gradients: &gradient_collector.gradients,
     };
 
     for (idx, element) in doc.elements.iter().enumerate() {
@@ -40,10 +57,183 @@ pub fn export(doc: &Document, layout: &LayoutTree) -> Result<String, ExportError
     Ok(svg)
 }
 
+/// Collects gradients from a document and assigns unique IDs.
+struct GradientCollector {
+    gradients: HashMap<String, Gradient>,
+    counter: usize,
+}
+
+impl GradientCollector {
+    fn new() -> Self {
+        Self {
+            gradients: HashMap::new(),
+            counter: 0,
+        }
+    }
+
+    fn collect_from_element(&mut self, element: &Element) {
+        match element {
+            Element::Frame(frame) => {
+                self.collect_from_properties(&frame.properties);
+                for child in &frame.children {
+                    self.collect_from_element(child);
+                }
+            }
+            Element::Text(text) => {
+                self.collect_from_properties(&text.properties);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_from_properties(&mut self, properties: &[Property]) {
+        for prop in properties {
+            if let PropertyValue::Gradient(gradient) = &prop.value {
+                let id = self.get_or_create_id(gradient);
+                let _ = id; // ID is already stored
+            }
+        }
+    }
+
+    fn get_or_create_id(&mut self, gradient: &Gradient) -> String {
+        // Check if we already have this gradient
+        for (id, existing) in &self.gradients {
+            if gradients_equal(existing, gradient) {
+                return id.clone();
+            }
+        }
+
+        // Create new ID
+        self.counter += 1;
+        let id = format!("gradient{}", self.counter);
+        self.gradients.insert(id.clone(), gradient.clone());
+        id
+    }
+
+    fn find_gradient_id(&self, gradient: &Gradient) -> Option<String> {
+        for (id, existing) in &self.gradients {
+            if gradients_equal(existing, gradient) {
+                return Some(id.clone());
+            }
+        }
+        None
+    }
+}
+
+fn gradients_equal(a: &Gradient, b: &Gradient) -> bool {
+    // Simple equality check
+    a == b
+}
+
+/// Write a gradient definition to the SVG defs section.
+fn write_gradient_def(svg: &mut String, id: &str, gradient: &Gradient) {
+    match gradient {
+        Gradient::Linear(linear) => write_linear_gradient_def(svg, id, linear),
+        Gradient::Radial(radial) => write_radial_gradient_def(svg, id, radial),
+        Gradient::Conic(conic) => write_conic_gradient_def(svg, id, conic),
+    }
+}
+
+fn write_linear_gradient_def(svg: &mut String, id: &str, gradient: &LinearGradient) {
+    // Convert angle to x1, y1, x2, y2
+    // SVG uses coordinates where (0,0) is top-left
+    let angle_rad = gradient.angle.to_radians();
+    let (x1, y1, x2, y2) = angle_to_coordinates(angle_rad);
+
+    svg.push_str(&format!(
+        "    <linearGradient id=\"{}\" x1=\"{}%\" y1=\"{}%\" x2=\"{}%\" y2=\"{}%\">\n",
+        id,
+        (x1 * 100.0).round(),
+        (y1 * 100.0).round(),
+        (x2 * 100.0).round(),
+        (y2 * 100.0).round()
+    ));
+
+    for stop in &gradient.stops {
+        write_gradient_stop(svg, stop);
+    }
+
+    svg.push_str("    </linearGradient>\n");
+}
+
+fn write_radial_gradient_def(svg: &mut String, id: &str, gradient: &RadialGradient) {
+    svg.push_str(&format!(
+        "    <radialGradient id=\"{}\" cx=\"{}%\" cy=\"{}%\" r=\"{}%\" fx=\"{}%\" fy=\"{}%\">\n",
+        id,
+        (gradient.center_x * 100.0).round(),
+        (gradient.center_y * 100.0).round(),
+        ((gradient.radius_x + gradient.radius_y) / 2.0 * 50.0).round(), // Average radius as %
+        (gradient.center_x * 100.0).round(),
+        (gradient.center_y * 100.0).round()
+    ));
+
+    for stop in &gradient.stops {
+        write_gradient_stop(svg, stop);
+    }
+
+    svg.push_str("    </radialGradient>\n");
+}
+
+fn write_conic_gradient_def(svg: &mut String, id: &str, gradient: &ConicGradient) {
+    // SVG doesn't natively support conic gradients
+    // We'll approximate with a radial gradient or just use the first/last colors
+    // For now, create a simple two-color radial as fallback
+    svg.push_str(&format!(
+        "    <!-- Conic gradient approximation (SVG doesn't support conic gradients natively) -->\n"
+    ));
+    svg.push_str(&format!(
+        "    <radialGradient id=\"{}\" cx=\"{}%\" cy=\"{}%\" r=\"50%\">\n",
+        id,
+        (gradient.center_x * 100.0).round(),
+        (gradient.center_y * 100.0).round()
+    ));
+
+    for stop in &gradient.stops {
+        write_gradient_stop(svg, stop);
+    }
+
+    svg.push_str("    </radialGradient>\n");
+}
+
+fn write_gradient_stop(svg: &mut String, stop: &GradientStop) {
+    let (r, g, b, a) = stop.color.to_rgba8();
+    let color_str = format!("#{:02x}{:02x}{:02x}", r, g, b);
+    let offset = (stop.position * 100.0).round();
+
+    if a == 255 {
+        svg.push_str(&format!(
+            "      <stop offset=\"{}%\" stop-color=\"{}\" />\n",
+            offset, color_str
+        ));
+    } else {
+        svg.push_str(&format!(
+            "      <stop offset=\"{}%\" stop-color=\"{}\" stop-opacity=\"{}\" />\n",
+            offset, color_str, a as f64 / 255.0
+        ));
+    }
+}
+
+/// Convert angle in radians to SVG gradient coordinates.
+fn angle_to_coordinates(angle_rad: f64) -> (f64, f64, f64, f64) {
+    // SVG coordinates: (0,0) is top-left, y increases downward
+    // Angle 0 = right, 90 = up, 180 = left, 270 = down
+    let cos = angle_rad.cos();
+    let sin = angle_rad.sin();
+
+    // Start from center, extend to edges
+    let x1 = 0.5 - cos * 0.5;
+    let y1 = 0.5 + sin * 0.5; // Invert for SVG coordinates
+    let x2 = 0.5 + cos * 0.5;
+    let y2 = 0.5 - sin * 0.5;
+
+    (x1, y1, x2, y2)
+}
+
 struct SvgBuilder<'a> {
     svg: &'a mut String,
     layout: &'a LayoutTree,
     indent: usize,
+    gradients: &'a HashMap<String, Gradient>,
 }
 
 impl<'a> SvgBuilder<'a> {
@@ -77,7 +267,7 @@ impl<'a> SvgBuilder<'a> {
         };
 
         // Extract style properties
-        let fill = get_fill_color(&frame.properties);
+        let fill = get_fill(&frame.properties, self.gradients);
         let stroke = get_stroke_color(&frame.properties);
         let stroke_width = get_stroke_width(&frame.properties);
         let corner_radius = get_corner_radius(&frame.properties);
@@ -96,13 +286,19 @@ impl<'a> SvgBuilder<'a> {
             attrs.push(format!("ry=\"{}\"", r));
         }
 
-        if let Some(color) = fill {
-            attrs.push(format!("fill=\"{}\"", color_to_svg(&color)));
-            if color.a < 1.0 {
-                attrs.push(format!("fill-opacity=\"{}\"", color.a));
+        match fill {
+            FillValue::Color(color) => {
+                attrs.push(format!("fill=\"{}\"", color_to_svg(&color)));
+                if color.a < 1.0 {
+                    attrs.push(format!("fill-opacity=\"{}\"", color.a));
+                }
             }
-        } else {
-            attrs.push("fill=\"none\"".to_string());
+            FillValue::Gradient(gradient_id) => {
+                attrs.push(format!("fill=\"url(#{})\"", gradient_id));
+            }
+            FillValue::None => {
+                attrs.push("fill=\"none\"".to_string());
+            }
         }
 
         if let Some(color) = stroke {
@@ -211,6 +407,13 @@ impl<'a> SvgBuilder<'a> {
 
 // Helper functions
 
+/// Represents a fill value (color, gradient, or none).
+enum FillValue {
+    Color(Color),
+    Gradient(String), // Gradient ID
+    None,
+}
+
 fn color_to_svg(color: &Color) -> String {
     let (r, g, b, _) = color.to_rgba8();
     format!("#{:02x}{:02x}{:02x}", r, g, b)
@@ -224,6 +427,32 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn get_fill(properties: &[Property], gradients: &HashMap<String, Gradient>) -> FillValue {
+    for prop in properties {
+        if prop.name == "fill" || prop.name == "background" || prop.name == "background-color" {
+            match &prop.value {
+                PropertyValue::Color(c) => return FillValue::Color(*c),
+                PropertyValue::Gradient(gradient) => {
+                    // Find the gradient ID
+                    for (id, existing) in gradients {
+                        if existing == gradient {
+                            return FillValue::Gradient(id.clone());
+                        }
+                    }
+                }
+                PropertyValue::String(s) => {
+                    if let Some(color) = Color::from_hex(s) {
+                        return FillValue::Color(color);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    FillValue::None
+}
+
+#[allow(dead_code)]
 fn get_fill_color(properties: &[Property]) -> Option<Color> {
     get_color_property(properties, "fill")
         .or_else(|| get_color_property(properties, "background"))

@@ -176,3 +176,176 @@ pub struct TokenId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConstraintId(pub u64);
+
+/// A gradient fill.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Gradient {
+    Linear(LinearGradient),
+    Radial(RadialGradient),
+    Conic(ConicGradient),
+}
+
+/// A linear gradient.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LinearGradient {
+    /// Angle in degrees (0 = right, 90 = up, 180 = left, 270 = down)
+    pub angle: f64,
+    /// Color stops
+    pub stops: Vec<GradientStop>,
+}
+
+impl LinearGradient {
+    /// Create a horizontal gradient (left to right).
+    pub fn horizontal(stops: Vec<GradientStop>) -> Self {
+        Self { angle: 0.0, stops }
+    }
+
+    /// Create a vertical gradient (top to bottom).
+    pub fn vertical(stops: Vec<GradientStop>) -> Self {
+        Self { angle: 270.0, stops }
+    }
+
+    /// Create a gradient with an angle.
+    pub fn with_angle(angle: f64, stops: Vec<GradientStop>) -> Self {
+        Self { angle, stops }
+    }
+
+    /// Sample the gradient at position t (0.0 to 1.0).
+    pub fn sample(&self, t: f64) -> Color {
+        sample_gradient(&self.stops, t)
+    }
+}
+
+/// A radial gradient.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RadialGradient {
+    /// Center X position (0.0 to 1.0, relative to bounds)
+    pub center_x: f64,
+    /// Center Y position (0.0 to 1.0, relative to bounds)
+    pub center_y: f64,
+    /// Radius X (1.0 = extend to edge)
+    pub radius_x: f64,
+    /// Radius Y (1.0 = extend to edge, same as radius_x for circles)
+    pub radius_y: f64,
+    /// Color stops
+    pub stops: Vec<GradientStop>,
+}
+
+impl RadialGradient {
+    /// Create a centered circular gradient.
+    pub fn circle(stops: Vec<GradientStop>) -> Self {
+        Self {
+            center_x: 0.5,
+            center_y: 0.5,
+            radius_x: 1.0,
+            radius_y: 1.0,
+            stops,
+        }
+    }
+
+    /// Create a gradient with custom center.
+    pub fn with_center(center_x: f64, center_y: f64, stops: Vec<GradientStop>) -> Self {
+        Self {
+            center_x,
+            center_y,
+            radius_x: 1.0,
+            radius_y: 1.0,
+            stops,
+        }
+    }
+
+    /// Sample the gradient at distance t from center (0.0 to 1.0).
+    pub fn sample(&self, t: f64) -> Color {
+        sample_gradient(&self.stops, t)
+    }
+}
+
+/// A conic (angular) gradient.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ConicGradient {
+    /// Center X position (0.0 to 1.0, relative to bounds)
+    pub center_x: f64,
+    /// Center Y position (0.0 to 1.0, relative to bounds)
+    pub center_y: f64,
+    /// Starting angle in degrees
+    pub start_angle: f64,
+    /// Color stops
+    pub stops: Vec<GradientStop>,
+}
+
+impl ConicGradient {
+    /// Create a centered conic gradient.
+    pub fn centered(stops: Vec<GradientStop>) -> Self {
+        Self {
+            center_x: 0.5,
+            center_y: 0.5,
+            start_angle: 0.0,
+            stops,
+        }
+    }
+
+    /// Sample the gradient at angle t (0.0 to 1.0 = 0 to 360 degrees).
+    pub fn sample(&self, t: f64) -> Color {
+        sample_gradient(&self.stops, t)
+    }
+}
+
+/// A color stop in a gradient.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GradientStop {
+    /// Position along the gradient (0.0 to 1.0)
+    pub position: f64,
+    /// Color at this position
+    pub color: Color,
+}
+
+impl GradientStop {
+    /// Create a new gradient stop.
+    pub fn new(position: f64, color: Color) -> Self {
+        Self { position, color }
+    }
+}
+
+/// Sample a gradient at position t using linear interpolation.
+fn sample_gradient(stops: &[GradientStop], t: f64) -> Color {
+    if stops.is_empty() {
+        return Color::TRANSPARENT;
+    }
+    if stops.len() == 1 {
+        return stops[0].color;
+    }
+
+    let t = t.clamp(0.0, 1.0);
+
+    // Find surrounding stops
+    let mut prev = &stops[0];
+    for stop in stops.iter() {
+        if stop.position >= t {
+            if stop.position == prev.position {
+                return stop.color;
+            }
+            // Interpolate between prev and stop
+            let local_t = (t - prev.position) / (stop.position - prev.position);
+            return lerp_color(prev.color, stop.color, local_t as f32);
+        }
+        prev = stop;
+    }
+
+    // Past the last stop
+    stops.last().unwrap().color
+}
+
+/// Linear interpolation between two colors.
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}

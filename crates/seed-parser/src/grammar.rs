@@ -13,6 +13,7 @@ use seed_core::{
     types::*,
     ParseError,
 };
+use std::f64::consts::PI;
 
 use crate::lexer::*;
 
@@ -297,6 +298,17 @@ fn parse_element_header<'a>(content: &'a str, keyword: &str) -> Result<Option<&'
 fn parse_property_value(input: &str) -> Result<PropertyValue, ParseError> {
     let input = input.trim();
 
+    // Gradient functions
+    if input.starts_with("linear-gradient(") {
+        return parse_linear_gradient(input).map(|g| PropertyValue::Gradient(Gradient::Linear(g)));
+    }
+    if input.starts_with("radial-gradient(") {
+        return parse_radial_gradient(input).map(|g| PropertyValue::Gradient(Gradient::Radial(g)));
+    }
+    if input.starts_with("conic-gradient(") {
+        return parse_conic_gradient(input).map(|g| PropertyValue::Gradient(Gradient::Conic(g)));
+    }
+
     // Hex color
     if let Some(hex) = input.strip_prefix('#') {
         if let Some(color) = Color::from_hex(hex) {
@@ -347,6 +359,314 @@ fn parse_property_value(input: &str) -> Result<PropertyValue, ParseError> {
 
     // Fallback: treat as string
     Ok(PropertyValue::String(input.to_string()))
+}
+
+/// Parse a linear gradient: linear-gradient(90deg, #ff0000, #0000ff)
+fn parse_linear_gradient(input: &str) -> Result<LinearGradient, ParseError> {
+    let inner = extract_function_args(input, "linear-gradient")?;
+    let parts = split_gradient_args(&inner);
+
+    if parts.is_empty() {
+        return Err(ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: "gradient stops".to_string(),
+            line: 0,
+            column: 0,
+        });
+    }
+
+    // First part might be angle or direction
+    let (angle, color_start) = parse_gradient_direction(&parts[0])
+        .map(|a| (a, 1))
+        .unwrap_or((270.0, 0)); // Default: top to bottom (270deg)
+
+    let stops = parse_color_stops(&parts[color_start..])?;
+
+    Ok(LinearGradient { angle, stops })
+}
+
+/// Parse a radial gradient: radial-gradient(circle, #ff0000, #0000ff)
+fn parse_radial_gradient(input: &str) -> Result<RadialGradient, ParseError> {
+    let inner = extract_function_args(input, "radial-gradient")?;
+    let parts = split_gradient_args(&inner);
+
+    if parts.is_empty() {
+        return Err(ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: "gradient stops".to_string(),
+            line: 0,
+            column: 0,
+        });
+    }
+
+    // First part might be shape/position
+    let (center_x, center_y, radius_x, radius_y, color_start) =
+        if parts[0].trim() == "circle" || parts[0].trim() == "ellipse" {
+            (0.5, 0.5, 1.0, 1.0, 1)
+        } else if parts[0].contains("at ") {
+            // Parse "circle at 50% 50%" syntax
+            let (cx, cy) = parse_position(&parts[0])?;
+            (cx, cy, 1.0, 1.0, 1)
+        } else {
+            (0.5, 0.5, 1.0, 1.0, 0)
+        };
+
+    let stops = parse_color_stops(&parts[color_start..])?;
+
+    Ok(RadialGradient {
+        center_x,
+        center_y,
+        radius_x,
+        radius_y,
+        stops,
+    })
+}
+
+/// Parse a conic gradient: conic-gradient(from 0deg, #ff0000, #0000ff)
+fn parse_conic_gradient(input: &str) -> Result<ConicGradient, ParseError> {
+    let inner = extract_function_args(input, "conic-gradient")?;
+    let parts = split_gradient_args(&inner);
+
+    if parts.is_empty() {
+        return Err(ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: "gradient stops".to_string(),
+            line: 0,
+            column: 0,
+        });
+    }
+
+    // First part might be "from Xdeg" or "from Xdeg at X% Y%"
+    let (start_angle, center_x, center_y, color_start) =
+        if parts[0].trim().starts_with("from ") {
+            let angle_part = parts[0].trim().strip_prefix("from ").unwrap();
+            if let Some(at_pos) = angle_part.find(" at ") {
+                let angle_str = &angle_part[..at_pos];
+                let pos_str = &angle_part[at_pos + 4..];
+                let angle = parse_angle(angle_str).unwrap_or(0.0);
+                let (cx, cy) = parse_simple_position(pos_str)?;
+                (angle, cx, cy, 1)
+            } else {
+                let angle = parse_angle(angle_part).unwrap_or(0.0);
+                (angle, 0.5, 0.5, 1)
+            }
+        } else {
+            (0.0, 0.5, 0.5, 0)
+        };
+
+    let stops = parse_color_stops(&parts[color_start..])?;
+
+    Ok(ConicGradient {
+        center_x,
+        center_y,
+        start_angle,
+        stops,
+    })
+}
+
+/// Extract the inner content of a function call.
+fn extract_function_args<'a>(input: &'a str, name: &str) -> Result<&'a str, ParseError> {
+    let prefix = format!("{}(", name);
+    let inner = input
+        .strip_prefix(&prefix)
+        .and_then(|s| s.strip_suffix(')'))
+        .ok_or_else(|| ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: format!("{}(...)", name),
+            line: 0,
+            column: 0,
+        })?;
+    Ok(inner)
+}
+
+/// Split gradient arguments by comma, respecting parentheses.
+fn split_gradient_args(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut paren_depth = 0;
+
+    for (i, c) in input.char_indices() {
+        match c {
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            ',' if paren_depth == 0 => {
+                parts.push(input[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if start < input.len() {
+        parts.push(input[start..].trim());
+    }
+
+    parts
+}
+
+/// Parse gradient direction (angle or keyword).
+fn parse_gradient_direction(input: &str) -> Option<f64> {
+    let input = input.trim();
+
+    // Angle with unit
+    if let Some(angle) = parse_angle(input) {
+        return Some(angle);
+    }
+
+    // Direction keywords
+    match input {
+        "to right" => Some(0.0),
+        "to top" => Some(90.0),
+        "to left" => Some(180.0),
+        "to bottom" => Some(270.0),
+        "to top right" | "to right top" => Some(45.0),
+        "to top left" | "to left top" => Some(135.0),
+        "to bottom left" | "to left bottom" => Some(225.0),
+        "to bottom right" | "to right bottom" => Some(315.0),
+        _ => None,
+    }
+}
+
+/// Parse an angle value (e.g., "90deg", "0.5turn", "1.57rad").
+fn parse_angle(input: &str) -> Option<f64> {
+    let input = input.trim();
+
+    if let Some(deg) = input.strip_suffix("deg") {
+        return deg.trim().parse::<f64>().ok();
+    }
+    if let Some(rad) = input.strip_suffix("rad") {
+        return rad.trim().parse::<f64>().ok().map(|r| r * 180.0 / PI);
+    }
+    if let Some(turn) = input.strip_suffix("turn") {
+        return turn.trim().parse::<f64>().ok().map(|t| t * 360.0);
+    }
+    if let Some(grad) = input.strip_suffix("grad") {
+        return grad.trim().parse::<f64>().ok().map(|g| g * 0.9);
+    }
+
+    None
+}
+
+/// Parse color stops.
+fn parse_color_stops(parts: &[&str]) -> Result<Vec<GradientStop>, ParseError> {
+    let mut stops = Vec::new();
+    let count = parts.len();
+
+    for (i, part) in parts.iter().enumerate() {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        // Check if there's a position specified (e.g., "#ff0000 50%")
+        let (color_str, position) = if let Some(space_pos) = part.rfind(' ') {
+            let potential_pos = part[space_pos + 1..].trim();
+            if let Some(pos) = parse_stop_position(potential_pos) {
+                (&part[..space_pos], pos)
+            } else {
+                (part, default_stop_position(i, count))
+            }
+        } else {
+            (part, default_stop_position(i, count))
+        };
+
+        let color = parse_color_value(color_str)?;
+        stops.push(GradientStop::new(position, color));
+    }
+
+    Ok(stops)
+}
+
+/// Parse a stop position (percentage or length).
+fn parse_stop_position(input: &str) -> Option<f64> {
+    let input = input.trim();
+
+    if let Some(pct) = input.strip_suffix('%') {
+        return pct.trim().parse::<f64>().ok().map(|p| p / 100.0);
+    }
+
+    // For now, only support percentages
+    None
+}
+
+/// Calculate default stop position based on index.
+fn default_stop_position(index: usize, count: usize) -> f64 {
+    if count <= 1 {
+        0.5
+    } else {
+        index as f64 / (count - 1) as f64
+    }
+}
+
+/// Parse a color value (hex or named).
+fn parse_color_value(input: &str) -> Result<Color, ParseError> {
+    let input = input.trim();
+
+    // Hex color
+    if let Some(hex) = input.strip_prefix('#') {
+        if let Some(color) = Color::from_hex(hex) {
+            return Ok(color);
+        }
+    }
+
+    // Named colors
+    match input.to_lowercase().as_str() {
+        "white" => return Ok(Color::WHITE),
+        "black" => return Ok(Color::BLACK),
+        "red" => return Ok(Color::from_rgb8(255, 0, 0)),
+        "green" => return Ok(Color::from_rgb8(0, 128, 0)),
+        "blue" => return Ok(Color::from_rgb8(0, 0, 255)),
+        "yellow" => return Ok(Color::from_rgb8(255, 255, 0)),
+        "cyan" => return Ok(Color::from_rgb8(0, 255, 255)),
+        "magenta" => return Ok(Color::from_rgb8(255, 0, 255)),
+        "orange" => return Ok(Color::from_rgb8(255, 165, 0)),
+        "purple" => return Ok(Color::from_rgb8(128, 0, 128)),
+        "pink" => return Ok(Color::from_rgb8(255, 192, 203)),
+        "transparent" => return Ok(Color::TRANSPARENT),
+        _ => {}
+    }
+
+    Err(ParseError::UnexpectedToken {
+        found: input.to_string(),
+        expected: "color value".to_string(),
+        line: 0,
+        column: 0,
+    })
+}
+
+/// Parse position from "circle at X% Y%" syntax.
+fn parse_position(input: &str) -> Result<(f64, f64), ParseError> {
+    if let Some(at_pos) = input.find(" at ") {
+        let pos_str = &input[at_pos + 4..];
+        parse_simple_position(pos_str)
+    } else {
+        Ok((0.5, 0.5))
+    }
+}
+
+/// Parse a simple position like "50% 50%" or "center".
+fn parse_simple_position(input: &str) -> Result<(f64, f64), ParseError> {
+    let input = input.trim();
+
+    // Keywords
+    match input {
+        "center" => return Ok((0.5, 0.5)),
+        "top" => return Ok((0.5, 0.0)),
+        "bottom" => return Ok((0.5, 1.0)),
+        "left" => return Ok((0.0, 0.5)),
+        "right" => return Ok((1.0, 0.5)),
+        _ => {}
+    }
+
+    // Parse "X% Y%"
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.len() == 2 {
+        let x = parse_stop_position(parts[0]).unwrap_or(0.5);
+        let y = parse_stop_position(parts[1]).unwrap_or(0.5);
+        return Ok((x, y));
+    }
+
+    Ok((0.5, 0.5))
 }
 
 /// Parse a constraint.
@@ -965,6 +1285,91 @@ mod tests {
                 assert_eq!(*op, InequalityOp::GreaterThanOrEqual);
             } else {
                 panic!("Expected inequality constraint");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_linear_gradient() {
+        let input = r#"Frame:
+  fill: linear-gradient(90deg, #ff0000, #0000ff)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            assert_eq!(frame.properties.len(), 1);
+            if let PropertyValue::Gradient(Gradient::Linear(lg)) = &frame.properties[0].value {
+                assert_eq!(lg.angle, 90.0);
+                assert_eq!(lg.stops.len(), 2);
+                assert_eq!(lg.stops[0].position, 0.0);
+                assert_eq!(lg.stops[1].position, 1.0);
+            } else {
+                panic!("Expected linear gradient");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_linear_gradient_direction() {
+        let input = r#"Frame:
+  fill: linear-gradient(to right, #ff0000, #00ff00, #0000ff)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            if let PropertyValue::Gradient(Gradient::Linear(lg)) = &frame.properties[0].value {
+                assert_eq!(lg.angle, 0.0); // "to right" = 0 degrees
+                assert_eq!(lg.stops.len(), 3);
+                assert_eq!(lg.stops[0].position, 0.0);
+                assert_eq!(lg.stops[1].position, 0.5);
+                assert_eq!(lg.stops[2].position, 1.0);
+            } else {
+                panic!("Expected linear gradient");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_radial_gradient() {
+        let input = r#"Frame:
+  fill: radial-gradient(circle, #ffffff, #000000)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            if let PropertyValue::Gradient(Gradient::Radial(rg)) = &frame.properties[0].value {
+                assert_eq!(rg.center_x, 0.5);
+                assert_eq!(rg.center_y, 0.5);
+                assert_eq!(rg.stops.len(), 2);
+            } else {
+                panic!("Expected radial gradient");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_gradient_with_positions() {
+        let input = r#"Frame:
+  fill: linear-gradient(180deg, #ff0000 0%, #00ff00 50%, #0000ff 100%)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            if let PropertyValue::Gradient(Gradient::Linear(lg)) = &frame.properties[0].value {
+                assert_eq!(lg.stops.len(), 3);
+                assert_eq!(lg.stops[0].position, 0.0);
+                assert_eq!(lg.stops[1].position, 0.5);
+                assert_eq!(lg.stops[2].position, 1.0);
+            } else {
+                panic!("Expected linear gradient");
             }
         } else {
             panic!("Expected Frame element");
