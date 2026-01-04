@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Seed Engine Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f5f5f5;
+      color: #333;
+    }
+    h1 { margin: 0 0 20px; color: #0066cc; }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .panel {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .panel h2 {
+      margin: 0 0 15px;
+      font-size: 16px;
+      color: #666;
+    }
+    .row {
+      display: flex;
+      gap: 20px;
+    }
+    .col {
+      flex: 1;
+      min-width: 0;
+    }
+    textarea {
+      width: 100%;
+      height: 200px;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 13px;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      resize: vertical;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #0066cc;
+    }
+    button {
+      background: #0066cc;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-right: 10px;
+      margin-top: 10px;
+    }
+    button:hover { background: #0052a3; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    button.secondary {
+      background: #666;
+    }
+    button.secondary:hover { background: #555; }
+    .output {
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 15px;
+      min-height: 200px;
+      overflow: auto;
+    }
+    .output svg {
+      max-width: 100%;
+      height: auto;
+    }
+    .error {
+      color: #cc0000;
+      background: #fff0f0;
+      border-color: #ffcccc;
+    }
+    .info {
+      font-size: 12px;
+      color: #666;
+      margin-top: 10px;
+    }
+    #status {
+      padding: 10px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+    }
+    #status.loading { background: #fff3cd; color: #856404; }
+    #status.ready { background: #d4edda; color: #155724; }
+    #status.error { background: #f8d7da; color: #721c24; }
+    .examples {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 15px;
+    }
+    .examples button {
+      margin: 0;
+      font-size: 12px;
+      padding: 6px 12px;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      font-size: 12px;
+    }
+    #layoutInfo {
+      font-size: 12px;
+      margin-top: 10px;
+    }
+    #layoutInfo table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    #layoutInfo th, #layoutInfo td {
+      text-align: left;
+      padding: 4px 8px;
+      border-bottom: 1px solid #eee;
+    }
+    #layoutInfo th { color: #666; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Seed Engine Demo</h1>
+
+    <div id="status" class="loading">Loading WebAssembly module...</div>
+
+    <div class="row">
+      <div class="col">
+        <div class="panel">
+          <h2>Seed Document</h2>
+          <div class="examples">
+            <button onclick="loadExample('simple')">Simple Frame</button>
+            <button onclick="loadExample('nested')">Nested Frames</button>
+            <button onclick="loadExample('card')">Card Layout</button>
+            <button onclick="loadExample('tokens')">With Tokens</button>
+          </div>
+          <textarea id="source" spellcheck="false">Frame:
+  fill: #0066cc
+  constraints:
+    - width = 200px
+    - height = 100px</textarea>
+          <div>
+            <button id="renderBtn" onclick="render()" disabled>Render</button>
+            <button id="exportSvgBtn" class="secondary" onclick="exportSvg()" disabled>Export SVG</button>
+            <button id="exportPngBtn" class="secondary" onclick="exportPng()" disabled>Export PNG</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Design Tokens (JSON)</h2>
+          <textarea id="tokens" spellcheck="false" style="height: 120px;">{
+  "colors": {
+    "primary": "#0066cc",
+    "secondary": "#6c757d",
+    "success": "#28a745",
+    "background": "#f8f9fa",
+    "text": "#212529"
+  },
+  "spacing": {
+    "sm": 8,
+    "md": 16,
+    "lg": 24
+  }
+}</textarea>
+          <button id="loadTokensBtn" onclick="loadTokens()" disabled>Load Tokens</button>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="panel">
+          <h2>SVG Output</h2>
+          <div id="output" class="output"></div>
+          <div id="layoutInfo"></div>
+          <div class="info">
+            <span id="version"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import init, { SeedEngine, getVersion } from './pkg/seed_wasm.js';
+
+    let engine = null;
+
+    const examples = {
+      simple: `Frame:
+  fill: #0066cc
+  constraints:
+    - width = 200px
+    - height = 100px`,
+      nested: `Frame Container:
+  fill: #f0f0f0
+  constraints:
+    - width = 300px
+    - height = 200px
+  Frame Left:
+    fill: #0066cc
+    constraints:
+      - width = 120px
+      - height = 80px
+  Frame Right:
+    fill: #28a745
+    constraints:
+      - width = 120px
+      - height = 80px`,
+      card: `Frame Card:
+  fill: #ffffff
+  stroke: #e0e0e0
+  constraints:
+    - width = 280px
+    - height = 160px
+  Frame Header:
+    fill: #0066cc
+    constraints:
+      - width = 280px
+      - height = 60px
+  Text Title:
+    content: "Card Title"
+    color: #212529
+    fontSize: 18px
+  Text Description:
+    content: "A simple card component."
+    color: #6c757d
+    fontSize: 14px`,
+      tokens: `Frame Container:
+  fill: $colors.background
+  constraints:
+    - width = 300px
+    - height = 200px
+  Frame Header:
+    fill: $colors.primary
+    constraints:
+      - width = 260px
+      - height = 60px
+  Text Title:
+    content: "Token-based styling"
+    color: $colors.text
+    fontSize: 16px
+  Text Subtitle:
+    content: "Using design tokens"
+    color: $colors.secondary
+    fontSize: 12px`
+    };
+
+    window.loadExample = function(name) {
+      document.getElementById('source').value = examples[name];
+      // Auto-load tokens for the tokens example
+      if (name === 'tokens') {
+        loadTokens();
+      }
+      render();
+    };
+
+    window.loadTokens = function() {
+      const tokensInput = document.getElementById('tokens').value;
+      const output = document.getElementById('output');
+
+      try {
+        const tokens = JSON.parse(tokensInput);
+        engine.loadTokens(tokens);
+        output.innerHTML = '<p style="color: #28a745;">Tokens loaded successfully!</p>';
+        output.classList.remove('error');
+      } catch (e) {
+        output.innerHTML = `<p>Error: ${e.message}</p>`;
+        output.classList.add('error');
+      }
+    };
+
+    window.render = function() {
+      const source = document.getElementById('source').value;
+      const output = document.getElementById('output');
+      const layoutInfo = document.getElementById('layoutInfo');
+
+      try {
+        // Parse the document
+        const doc = engine.parse(source);
+
+        // Compute layout
+        const layout = engine.layout();
+
+        // Get bounds
+        const bounds = engine.getContentBounds();
+
+        // Export to SVG
+        const svg = engine.exportSvg();
+
+        output.innerHTML = svg;
+        output.classList.remove('error');
+
+        // Show layout info
+        if (layout && layout.length > 0) {
+          let tableHtml = '<table><tr><th>Element</th><th>Position</th><th>Size</th></tr>';
+          for (const node of layout) {
+            const name = node.name || `#${node.id}`;
+            tableHtml += `<tr>
+              <td>${name}</td>
+              <td>${node.absoluteX.toFixed(0)}, ${node.absoluteY.toFixed(0)}</td>
+              <td>${node.absoluteWidth.toFixed(0)} × ${node.absoluteHeight.toFixed(0)}</td>
+            </tr>`;
+          }
+          tableHtml += '</table>';
+          layoutInfo.innerHTML = tableHtml;
+        } else {
+          layoutInfo.innerHTML = '';
+        }
+
+      } catch (e) {
+        output.innerHTML = `<p>Error: ${e.message}</p>`;
+        output.classList.add('error');
+        layoutInfo.innerHTML = '';
+      }
+    };
+
+    window.exportSvg = function() {
+      try {
+        const svg = engine.exportSvg();
+        downloadFile(svg, 'seed-export.svg', 'image/svg+xml');
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    };
+
+    window.exportPng = function() {
+      try {
+        const pngData = engine.exportPng();
+        const blob = new Blob([pngData], { type: 'image/png' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'seed-export.png';
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    };
+
+    function downloadFile(content, filename, mimeType) {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Initialize
+    async function main() {
+      const status = document.getElementById('status');
+
+      try {
+        await init();
+        engine = new SeedEngine();
+
+        // Enable buttons
+        document.getElementById('renderBtn').disabled = false;
+        document.getElementById('exportSvgBtn').disabled = false;
+        document.getElementById('exportPngBtn').disabled = false;
+        document.getElementById('loadTokensBtn').disabled = false;
+
+        // Show version
+        document.getElementById('version').textContent = `Seed Engine v${SeedEngine.version()}`;
+
+        status.textContent = 'Ready!';
+        status.className = 'ready';
+
+        // Initial render
+        render();
+
+      } catch (e) {
+        status.textContent = `Failed to load: ${e.message}`;
+        status.className = 'error';
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>

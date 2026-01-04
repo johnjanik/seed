@@ -1,0 +1,10 @@
+[package]
+name = "seed-expander"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Component expansion for Seed documents"
+
+[dependencies]
+seed-core.workspace = true
+thiserror.workspace = true

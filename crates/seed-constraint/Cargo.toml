@@ -1,0 +1,11 @@
+[package]
+name = "seed-constraint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Constraint solving for Seed documents"
+
+[dependencies]
+seed-core.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true

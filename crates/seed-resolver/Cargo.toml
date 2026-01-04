@@ -1,0 +1,11 @@
+[package]
+name = "seed-resolver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Token and reference resolution for Seed documents"
+
+[dependencies]
+seed-core.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true

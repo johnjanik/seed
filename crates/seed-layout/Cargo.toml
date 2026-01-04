@@ -1,0 +1,12 @@
+[package]
+name = "seed-layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Layout computation for Seed documents"
+
+[dependencies]
+seed-core.workspace = true
+seed-constraint.workspace = true
+thiserror.workspace = true
+glam.workspace = true

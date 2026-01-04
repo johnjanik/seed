@@ -1,0 +1,18 @@
+[package]
+name = "seed-render-2d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "2D rendering for Seed documents"
+
+[dependencies]
+seed-core.workspace = true
+seed-layout = { workspace = true }
+thiserror.workspace = true
+glam.workspace = true
+wgpu = { workspace = true, optional = true }
+lyon.workspace = true
+
+[features]
+default = ["gpu"]
+gpu = ["dep:wgpu"]
