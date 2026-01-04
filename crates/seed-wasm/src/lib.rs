@@ -323,6 +323,18 @@ impl SeedEngine {
         seed_export::export_stl_ascii(doc)
             .map_err(|e| JsError::new(&format!("STL export error: {}", e)))
     }
+
+    /// Export a 2D document to PDF.
+    #[wasm_bindgen(js_name = exportPdf)]
+    pub fn export_pdf(&self) -> Result<Vec<u8>, JsError> {
+        let doc = self.last_document.as_ref()
+            .ok_or_else(|| JsError::new("No document parsed. Call parse() first."))?;
+        let layout = self.last_layout.as_ref()
+            .ok_or_else(|| JsError::new("Layout not computed. Call layout() first."))?;
+
+        seed_export::export_pdf(doc, layout)
+            .map_err(|e| JsError::new(&format!("PDF export error: {}", e)))
+    }
 }
 
 impl SeedEngine {
@@ -421,5 +433,111 @@ mod tests {
     fn test_version() {
         let version = SeedEngine::version();
         assert!(!version.is_empty());
+    }
+
+    #[test]
+    fn test_parse_only() {
+        let source = "Frame:\n  width: 100px\n  height: 100px\n  fill: #ff0000";
+        let result = parse_document(source);
+        assert!(result.is_ok(), "Parse failed: {:?}", result.err());
+        println!("Parse OK");
+    }
+
+    #[test]
+    fn test_resolve_tokens_step() {
+        use seed_core::TokenMap;
+        use seed_resolver::resolve_tokens;
+
+        let source = "Frame:\n  width: 100px\n  height: 100px\n  fill: #ff0000";
+        let doc = parse_document(source).unwrap();
+        println!("Parsed, resolving tokens...");
+
+        let tokens = TokenMap::new();
+        let doc = resolve_tokens(&doc, &tokens).unwrap();
+        println!("Tokens resolved, {} elements", doc.elements.len());
+    }
+
+    #[test]
+    fn test_resolve_refs_step() {
+        use seed_core::TokenMap;
+        use seed_resolver::{resolve_tokens, resolve_references};
+
+        let source = "Frame:\n  width: 100px\n  height: 100px\n  fill: #ff0000";
+        let doc = parse_document(source).unwrap();
+        let tokens = TokenMap::new();
+        let doc = resolve_tokens(&doc, &tokens).unwrap();
+        println!("Resolving references...");
+
+        let doc = resolve_references(&doc).unwrap();
+        println!("References resolved");
+    }
+
+    #[test]
+    fn test_expand_step() {
+        use seed_core::TokenMap;
+        use seed_resolver::{resolve_tokens, resolve_references};
+        use seed_expander::{expand_components, ComponentRegistry};
+
+        let source = "Frame:\n  width: 100px\n  height: 100px\n  fill: #ff0000";
+        let doc = parse_document(source).unwrap();
+        let tokens = TokenMap::new();
+        let doc = resolve_tokens(&doc, &tokens).unwrap();
+        let doc = resolve_references(&doc).unwrap();
+        println!("Expanding components...");
+
+        let components = ComponentRegistry::new();
+        let doc = expand_components(&doc, &components).unwrap();
+        println!("Expanded, {} elements", doc.elements.len());
+    }
+
+    #[test]
+    fn test_full_render_pipeline() {
+        use seed_core::TokenMap;
+        use seed_resolver::{resolve_tokens, resolve_references};
+        use seed_expander::{expand_components, ComponentRegistry};
+        use seed_layout::{compute_layout, LayoutOptions};
+        use seed_export::png;
+
+        let source = "Frame:\n  width: 200px\n  height: 100px\n  fill: #4a90d9";
+        let doc = parse_document(source).unwrap();
+        let tokens = TokenMap::new();
+        let doc = resolve_tokens(&doc, &tokens).unwrap();
+        let doc = resolve_references(&doc).unwrap();
+        let components = ComponentRegistry::new();
+        let doc = expand_components(&doc, &components).unwrap();
+
+        let layout = compute_layout(&doc, &LayoutOptions::default()).unwrap();
+        let bounds = layout.content_bounds();
+
+        println!("Layout bounds: {}x{} at ({}, {})", bounds.width, bounds.height, bounds.x, bounds.y);
+
+        // Verify the layout computed the correct size from properties
+        assert!((bounds.width - 200.0).abs() < 0.001, "Expected width 200, got {}", bounds.width);
+        assert!((bounds.height - 100.0).abs() < 0.001, "Expected height 100, got {}", bounds.height);
+
+        // Export to PNG
+        let png_data = png::export(&doc, &layout).unwrap();
+
+        // Verify PNG is reasonable size (200x100 = 80KB raw + overhead, should be < 150KB)
+        println!("PNG size: {} bytes", png_data.len());
+        assert!(png_data.len() < 150_000, "PNG too large: {} bytes", png_data.len());
+
+        // Verify PNG signature
+        assert_eq!(&png_data[0..8], &[137, 80, 78, 71, 13, 10, 26, 10], "Invalid PNG signature");
+
+        // Parse and verify IHDR chunk
+        let ihdr_len = u32::from_be_bytes([png_data[8], png_data[9], png_data[10], png_data[11]]);
+        assert_eq!(ihdr_len, 13, "IHDR length should be 13");
+        assert_eq!(&png_data[12..16], b"IHDR", "Missing IHDR chunk");
+
+        let width = u32::from_be_bytes([png_data[16], png_data[17], png_data[18], png_data[19]]);
+        let height = u32::from_be_bytes([png_data[20], png_data[21], png_data[22], png_data[23]]);
+        println!("PNG dimensions in header: {}x{}", width, height);
+        assert_eq!(width, 200, "PNG width mismatch");
+        assert_eq!(height, 100, "PNG height mismatch");
+
+        // Write to temp file for manual inspection
+        std::fs::write("/tmp/test_output.png", &png_data).unwrap();
+        println!("Wrote PNG to /tmp/test_output.png");
     }
 }

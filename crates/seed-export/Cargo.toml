@@ -13,10 +13,11 @@ seed-render-3d = { workspace = true }
 thiserror.workspace = true
 serde_json.workspace = true
 glam.workspace = true
+pdf-writer = { version = "0.12", optional = true }
 
 [features]
 default = ["svg", "pdf"]
 svg = []
-pdf = []
+pdf = ["dep:pdf-writer"]
 step = []
 stl = []

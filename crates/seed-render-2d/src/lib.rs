@@ -7,10 +7,12 @@ mod shapes;
 mod pipeline;
 pub mod primitives;
 pub mod scene;
+pub mod text;
 
 pub use primitives::*;
 pub use scene::build_scene;
 pub use shapes::{Mesh, Tessellator, Vertex};
+pub use text::{TextRenderer, blend_text_onto_buffer};
 
 use seed_core::{Document, RenderError};
 use seed_layout::LayoutTree;
@@ -41,6 +43,7 @@ pub struct SoftwareRenderer {
     height: u32,
     buffer: Vec<u8>,
     tessellator: Tessellator,
+    text_renderer: TextRenderer,
 }
 
 impl SoftwareRenderer {
@@ -51,6 +54,7 @@ impl SoftwareRenderer {
             height,
             buffer: vec![255; (width * height * 4) as usize], // RGBA, white background
             tessellator: Tessellator::new(),
+            text_renderer: TextRenderer::new(),
         }
     }
 
@@ -95,9 +99,11 @@ impl SoftwareRenderer {
                     self.tessellator.tessellate_path(path, &mut mesh);
                     self.rasterize_mesh(&mesh);
                 }
-                RenderCommand::Text(_text) => {
-                    // Text rendering requires font rasterization
-                    // For now, skip text in software renderer
+                RenderCommand::Text(text) => {
+                    self.render_text(text);
+                }
+                RenderCommand::Shadow(shadow) => {
+                    self.render_shadow(shadow);
                 }
                 RenderCommand::PushClip(_) | RenderCommand::PopClip => {
                     // Clipping requires more complex state management
@@ -203,6 +209,114 @@ impl SoftwareRenderer {
     /// Get a reference to the raw pixel buffer.
     pub fn buffer(&self) -> &[u8] {
         &self.buffer
+    }
+
+    /// Render text using the built-in bitmap font.
+    fn render_text(&mut self, text: &TextPrimitive) {
+        // Rasterize the text to a bitmap
+        let (bitmap, text_width, text_height) = self.text_renderer.rasterize(&text.text, text.font_size);
+
+        if bitmap.is_empty() {
+            return;
+        }
+
+        // Blend the text bitmap onto the buffer
+        blend_text_onto_buffer(
+            &mut self.buffer,
+            self.width,
+            self.height,
+            &bitmap,
+            text_width,
+            text_height,
+            text.x as i32,
+            text.y as i32,
+            text.color,
+        );
+    }
+
+    /// Render a shadow.
+    fn render_shadow(&mut self, shadow: &ShadowPrimitive) {
+        if shadow.inset {
+            // Inner shadows are more complex - skip for now
+            return;
+        }
+
+        // Get shape bounds
+        let (x, y, width, height) = match &shadow.shape {
+            ShadowShape::Rect { x, y, width, height, .. } => (*x, *y, *width, *height),
+            ShadowShape::Ellipse { center_x, center_y, radius_x, radius_y } => {
+                (center_x - radius_x, center_y - radius_y, radius_x * 2.0, radius_y * 2.0)
+            }
+        };
+
+        // Calculate shadow bounds (offset + spread)
+        let shadow_x = x + shadow.offset_x - shadow.spread;
+        let shadow_y = y + shadow.offset_y - shadow.spread;
+        let shadow_width = width + shadow.spread * 2.0;
+        let shadow_height = height + shadow.spread * 2.0;
+
+        // Blur radius affects the shadow expansion
+        let blur_expansion = shadow.blur * 1.5;
+        let render_x = (shadow_x - blur_expansion).max(0.0) as i32;
+        let render_y = (shadow_y - blur_expansion).max(0.0) as i32;
+        let render_x2 = ((shadow_x + shadow_width + blur_expansion) as i32).min(self.width as i32);
+        let render_y2 = ((shadow_y + shadow_height + blur_expansion) as i32).min(self.height as i32);
+
+        // Get shadow color
+        let (sr, sg, sb, sa) = shadow.color.to_rgba8();
+        let sr = sr as f32 / 255.0;
+        let sg = sg as f32 / 255.0;
+        let sb = sb as f32 / 255.0;
+        let sa = sa as f32 / 255.0;
+
+        // Render shadow with simple distance-based falloff
+        let blur_radius = shadow.blur.max(0.1);
+
+        for py in render_y..render_y2 {
+            for px in render_x..render_x2 {
+                // Calculate distance to shadow rectangle
+                let dx = if (px as f32) < shadow_x {
+                    shadow_x - px as f32
+                } else if (px as f32) > shadow_x + shadow_width {
+                    px as f32 - (shadow_x + shadow_width)
+                } else {
+                    0.0
+                };
+
+                let dy = if (py as f32) < shadow_y {
+                    shadow_y - py as f32
+                } else if (py as f32) > shadow_y + shadow_height {
+                    py as f32 - (shadow_y + shadow_height)
+                } else {
+                    0.0
+                };
+
+                let distance = (dx * dx + dy * dy).sqrt();
+
+                // Calculate alpha based on distance and blur
+                let alpha = if distance <= 0.0 {
+                    sa
+                } else {
+                    // Gaussian-like falloff
+                    let falloff = (-distance * distance / (blur_radius * blur_radius * 0.5)).exp();
+                    sa * falloff
+                };
+
+                if alpha > 0.001 {
+                    // Alpha blend with existing pixel
+                    let idx = ((py as u32 * self.width + px as u32) * 4) as usize;
+                    if idx + 3 < self.buffer.len() {
+                        let dst_r = self.buffer[idx] as f32 / 255.0;
+                        let dst_g = self.buffer[idx + 1] as f32 / 255.0;
+                        let dst_b = self.buffer[idx + 2] as f32 / 255.0;
+
+                        self.buffer[idx] = ((sr * alpha + dst_r * (1.0 - alpha)) * 255.0) as u8;
+                        self.buffer[idx + 1] = ((sg * alpha + dst_g * (1.0 - alpha)) * 255.0) as u8;
+                        self.buffer[idx + 2] = ((sb * alpha + dst_b * (1.0 - alpha)) * 255.0) as u8;
+                    }
+                }
+            }
+        }
     }
 }
 

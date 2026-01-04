@@ -2,15 +2,18 @@
 
 use seed_core::{
     ast::{Element, FrameElement, TextElement, Property, PropertyValue},
-    types::Color,
+    types::{Color, Gradient, LinearGradient as AstLinearGradient, RadialGradient as AstRadialGradient, ConicGradient as AstConicGradient},
     Document,
 };
 use seed_layout::{LayoutTree, LayoutNodeId};
 
 use crate::primitives::{
     Scene, RenderCommand, RectPrimitive, RoundedRectPrimitive, TextPrimitive,
-    Fill, Stroke, CornerRadius,
+    Fill, Stroke, CornerRadius, LinearGradient, RadialGradient, GradientStop,
+    ShadowPrimitive, ShadowShape,
 };
+use glam::Vec2;
+use seed_core::types::Shadow as AstShadow;
 
 /// Build a renderable scene from a document and its layout.
 pub fn build_scene(doc: &Document, layout: &LayoutTree) -> Scene {
@@ -84,10 +87,32 @@ impl<'a> SceneBuilder<'a> {
             );
         }
 
-        // Get fill and stroke from properties
-        let fill = get_fill_from_properties(&frame.properties);
+        // Get fill, stroke, shadow from properties
+        let fill = get_fill_from_properties(&frame.properties, bounds.x as f32, bounds.y as f32, bounds.width as f32, bounds.height as f32);
         let stroke = get_stroke_from_properties(&frame.properties);
         let corner_radius = get_corner_radius_from_properties(&frame.properties);
+        let shadow = get_shadow_from_properties(&frame.properties);
+
+        // Render shadow first (behind the shape)
+        if let Some(shadow) = shadow {
+            let radius = corner_radius.unwrap_or_else(|| CornerRadius::uniform(0.0));
+            let shadow_prim = ShadowPrimitive::new(
+                ShadowShape::Rect {
+                    x: bounds.x as f32,
+                    y: bounds.y as f32,
+                    width: bounds.width as f32,
+                    height: bounds.height as f32,
+                    radius,
+                },
+                shadow.offset_x as f32,
+                shadow.offset_y as f32,
+                shadow.blur as f32,
+                shadow.spread as f32,
+                shadow.color,
+                shadow.inset,
+            );
+            self.scene.shadow(shadow_prim);
+        }
 
         // Only render if there's something to draw
         if fill.is_some() || stroke.is_some() {
@@ -179,11 +204,95 @@ impl<'a> SceneBuilder<'a> {
 
 // Property extraction helpers
 
-fn get_fill_from_properties(properties: &[Property]) -> Option<Fill> {
+fn get_fill_from_properties(properties: &[Property], x: f32, y: f32, width: f32, height: f32) -> Option<Fill> {
+    // First check for gradient fills
+    for prop in properties {
+        if prop.name == "fill" || prop.name == "background" || prop.name == "background-color" {
+            if let PropertyValue::Gradient(gradient) = &prop.value {
+                return Some(convert_gradient(gradient, x, y, width, height));
+            }
+        }
+    }
+
+    // Fall back to solid color
     get_color_from_properties(properties, "fill")
         .or_else(|| get_color_from_properties(properties, "background"))
         .or_else(|| get_color_from_properties(properties, "background-color"))
         .map(Fill::Solid)
+}
+
+/// Convert an AST gradient to a render primitive gradient.
+fn convert_gradient(gradient: &Gradient, x: f32, y: f32, width: f32, height: f32) -> Fill {
+    match gradient {
+        Gradient::Linear(linear) => {
+            // Convert angle to start/end points
+            // Angle: 0 = right (→), 90 = up (↑), 180 = left (←), 270 = down (↓)
+            let angle_rad = linear.angle.to_radians();
+            let cos_a = angle_rad.cos() as f32;
+            let sin_a = angle_rad.sin() as f32;
+
+            // Calculate gradient line endpoints
+            // The gradient line passes through the center and extends to the edges
+            let cx = x + width / 2.0;
+            let cy = y + height / 2.0;
+
+            // Calculate the length needed to cover the rectangle
+            let half_diag = ((width / 2.0).powi(2) + (height / 2.0).powi(2)).sqrt();
+
+            let start = Vec2::new(cx - cos_a * half_diag, cy + sin_a * half_diag);
+            let end = Vec2::new(cx + cos_a * half_diag, cy - sin_a * half_diag);
+
+            let stops: Vec<GradientStop> = linear.stops.iter().map(|s| {
+                GradientStop {
+                    offset: s.position as f32,
+                    color: s.color,
+                }
+            }).collect();
+
+            Fill::LinearGradient(LinearGradient { start, end, stops })
+        }
+        Gradient::Radial(radial) => {
+            // Convert relative center to absolute coordinates
+            let cx = x + width * radial.center_x as f32;
+            let cy = y + height * radial.center_y as f32;
+
+            // Use the larger dimension for radius
+            let radius = (width.max(height) / 2.0) * radial.radius_x as f32;
+
+            let stops: Vec<GradientStop> = radial.stops.iter().map(|s| {
+                GradientStop {
+                    offset: s.position as f32,
+                    color: s.color,
+                }
+            }).collect();
+
+            Fill::RadialGradient(RadialGradient {
+                center: Vec2::new(cx, cy),
+                radius,
+                stops,
+            })
+        }
+        Gradient::Conic(conic) => {
+            // For conic gradients, we'll approximate with a radial gradient for now
+            // A proper implementation would require angular sampling
+            let cx = x + width * conic.center_x as f32;
+            let cy = y + height * conic.center_y as f32;
+            let radius = width.max(height) / 2.0;
+
+            let stops: Vec<GradientStop> = conic.stops.iter().map(|s| {
+                GradientStop {
+                    offset: s.position as f32,
+                    color: s.color,
+                }
+            }).collect();
+
+            Fill::RadialGradient(RadialGradient {
+                center: Vec2::new(cx, cy),
+                radius,
+                stops,
+            })
+        }
+    }
 }
 
 fn get_stroke_from_properties(properties: &[Property]) -> Option<Stroke> {
@@ -221,6 +330,18 @@ fn get_corner_radius_from_properties(properties: &[Property]) -> Option<CornerRa
     } else {
         None
     }
+}
+
+fn get_shadow_from_properties(properties: &[Property]) -> Option<AstShadow> {
+    // Check for shadow, box-shadow, or drop-shadow properties
+    for prop in properties {
+        if prop.name == "shadow" || prop.name == "box-shadow" || prop.name == "drop-shadow" {
+            if let PropertyValue::Shadow(shadow) = &prop.value {
+                return Some(*shadow);
+            }
+        }
+    }
+    None
 }
 
 fn get_color_from_properties(properties: &[Property], name: &str) -> Option<Color> {

@@ -304,6 +304,197 @@ pub struct GradientStop {
     pub color: Color,
 }
 
+/// A shadow effect (drop shadow or inner shadow).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Shadow {
+    /// Horizontal offset (positive = right)
+    pub offset_x: f64,
+    /// Vertical offset (positive = down)
+    pub offset_y: f64,
+    /// Blur radius (0 = sharp edge)
+    pub blur: f64,
+    /// Spread radius (positive = larger shadow, negative = smaller)
+    pub spread: f64,
+    /// Shadow color
+    pub color: Color,
+    /// Whether this is an inner shadow (inset)
+    pub inset: bool,
+}
+
+impl Shadow {
+    /// Create a new drop shadow.
+    pub fn drop(offset_x: f64, offset_y: f64, blur: f64, color: Color) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur,
+            spread: 0.0,
+            color,
+            inset: false,
+        }
+    }
+
+    /// Create a new inner shadow.
+    pub fn inner(offset_x: f64, offset_y: f64, blur: f64, color: Color) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur,
+            spread: 0.0,
+            color,
+            inset: true,
+        }
+    }
+
+    /// Create a shadow with all parameters.
+    pub fn new(offset_x: f64, offset_y: f64, blur: f64, spread: f64, color: Color, inset: bool) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur,
+            spread,
+            color,
+            inset,
+        }
+    }
+
+    /// Set the spread radius.
+    pub fn with_spread(mut self, spread: f64) -> Self {
+        self.spread = spread;
+        self
+    }
+}
+
+/// A 2D transform.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Transform {
+    /// The list of transform operations (applied in order)
+    pub operations: Vec<TransformOp>,
+}
+
+impl Transform {
+    /// Create an identity transform.
+    pub fn identity() -> Self {
+        Self { operations: Vec::new() }
+    }
+
+    /// Create a rotation transform.
+    pub fn rotate(angle: f64) -> Self {
+        Self { operations: vec![TransformOp::Rotate(angle)] }
+    }
+
+    /// Create a scale transform.
+    pub fn scale(x: f64, y: f64) -> Self {
+        Self { operations: vec![TransformOp::Scale(x, y)] }
+    }
+
+    /// Create a translation transform.
+    pub fn translate(x: f64, y: f64) -> Self {
+        Self { operations: vec![TransformOp::Translate(x, y)] }
+    }
+
+    /// Add a rotation operation.
+    pub fn then_rotate(mut self, angle: f64) -> Self {
+        self.operations.push(TransformOp::Rotate(angle));
+        self
+    }
+
+    /// Add a scale operation.
+    pub fn then_scale(mut self, x: f64, y: f64) -> Self {
+        self.operations.push(TransformOp::Scale(x, y));
+        self
+    }
+
+    /// Add a translation operation.
+    pub fn then_translate(mut self, x: f64, y: f64) -> Self {
+        self.operations.push(TransformOp::Translate(x, y));
+        self
+    }
+
+    /// Convert to a 2D transformation matrix [a, b, c, d, e, f].
+    /// This is row-major: [a, c, e; b, d, f; 0, 0, 1]
+    /// So a point (x, y) transforms to (ax + cy + e, bx + dy + f).
+    pub fn to_matrix(&self) -> [f64; 6] {
+        let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
+
+        for op in &self.operations {
+            m = multiply_matrix(m, op.to_matrix());
+        }
+
+        m
+    }
+}
+
+/// A single transform operation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TransformOp {
+    /// Rotation in degrees (around the origin)
+    Rotate(f64),
+    /// Rotation in degrees around a point
+    RotateAround { angle: f64, cx: f64, cy: f64 },
+    /// Scale by (x, y) factors
+    Scale(f64, f64),
+    /// Translation by (x, y)
+    Translate(f64, f64),
+    /// Skew by (x, y) angles in degrees
+    Skew(f64, f64),
+    /// Arbitrary matrix [a, b, c, d, e, f]
+    Matrix([f64; 6]),
+}
+
+impl TransformOp {
+    /// Convert this operation to a 2D transformation matrix.
+    pub fn to_matrix(&self) -> [f64; 6] {
+        match *self {
+            TransformOp::Rotate(angle) => {
+                let rad = angle.to_radians();
+                let cos = rad.cos();
+                let sin = rad.sin();
+                [cos, sin, -sin, cos, 0.0, 0.0]
+            }
+            TransformOp::RotateAround { angle, cx, cy } => {
+                // Translate to origin, rotate, translate back
+                let rad = angle.to_radians();
+                let cos = rad.cos();
+                let sin = rad.sin();
+                [
+                    cos, sin,
+                    -sin, cos,
+                    cx - cx * cos + cy * sin,
+                    cy - cx * sin - cy * cos,
+                ]
+            }
+            TransformOp::Scale(sx, sy) => {
+                [sx, 0.0, 0.0, sy, 0.0, 0.0]
+            }
+            TransformOp::Translate(tx, ty) => {
+                [1.0, 0.0, 0.0, 1.0, tx, ty]
+            }
+            TransformOp::Skew(ax, ay) => {
+                let tan_x = ax.to_radians().tan();
+                let tan_y = ay.to_radians().tan();
+                [1.0, tan_y, tan_x, 1.0, 0.0, 0.0]
+            }
+            TransformOp::Matrix(m) => m,
+        }
+    }
+}
+
+/// Multiply two 2D transformation matrices.
+fn multiply_matrix(a: [f64; 6], b: [f64; 6]) -> [f64; 6] {
+    [
+        a[0] * b[0] + a[2] * b[1],
+        a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3],
+        a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4],
+        a[1] * b[4] + a[3] * b[5] + a[5],
+    ]
+}
+
 impl GradientStop {
     /// Create a new gradient stop.
     pub fn new(position: f64, color: Color) -> Self {

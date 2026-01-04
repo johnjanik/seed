@@ -18,12 +18,86 @@ pub enum RenderCommand {
     Path(PathPrimitive),
     /// Draw text
     Text(TextPrimitive),
+    /// Draw a shadow
+    Shadow(ShadowPrimitive),
     /// Push a clip region
     PushClip(ClipRegion),
     /// Pop clip region
     PopClip,
     /// Set opacity for subsequent commands
     SetOpacity(f32),
+}
+
+/// A shadow primitive.
+#[derive(Debug, Clone)]
+pub struct ShadowPrimitive {
+    /// The shape the shadow is cast from
+    pub shape: ShadowShape,
+    /// Horizontal offset
+    pub offset_x: f32,
+    /// Vertical offset
+    pub offset_y: f32,
+    /// Blur radius
+    pub blur: f32,
+    /// Spread radius
+    pub spread: f32,
+    /// Shadow color
+    pub color: Color,
+    /// Whether this is an inner shadow
+    pub inset: bool,
+}
+
+/// Shape that a shadow is cast from.
+#[derive(Debug, Clone)]
+pub enum ShadowShape {
+    /// Rectangle with optional corner radius
+    Rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: CornerRadius,
+    },
+    /// Ellipse
+    Ellipse {
+        center_x: f32,
+        center_y: f32,
+        radius_x: f32,
+        radius_y: f32,
+    },
+}
+
+impl ShadowPrimitive {
+    /// Create a new drop shadow for a rectangle.
+    pub fn rect(
+        x: f32, y: f32, width: f32, height: f32,
+        offset_x: f32, offset_y: f32, blur: f32, color: Color,
+    ) -> Self {
+        Self {
+            shape: ShadowShape::Rect {
+                x, y, width, height,
+                radius: CornerRadius::uniform(0.0),
+            },
+            offset_x,
+            offset_y,
+            blur,
+            spread: 0.0,
+            color,
+            inset: false,
+        }
+    }
+
+    /// Create a new shadow with all parameters.
+    pub fn new(
+        shape: ShadowShape,
+        offset_x: f32, offset_y: f32,
+        blur: f32, spread: f32,
+        color: Color, inset: bool,
+    ) -> Self {
+        Self {
+            shape, offset_x, offset_y, blur, spread, color, inset,
+        }
+    }
 }
 
 /// A rectangle primitive.
@@ -406,6 +480,10 @@ impl Scene {
 
     pub fn text(&mut self, text: TextPrimitive) {
         self.commands.push(RenderCommand::Text(text));
+    }
+
+    pub fn shadow(&mut self, shadow: ShadowPrimitive) {
+        self.commands.push(RenderCommand::Shadow(shadow));
     }
 
     pub fn push_clip(&mut self, x: f32, y: f32, width: f32, height: f32) {

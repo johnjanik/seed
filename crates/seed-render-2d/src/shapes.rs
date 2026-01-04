@@ -108,13 +108,18 @@ impl Tessellator {
         fill: &Fill,
         mesh: &mut Mesh,
     ) {
-        let color = fill_to_color(fill);
         let base = mesh.vertices.len() as u32;
 
-        mesh.vertices.push(Vertex::new(x, y, color));
-        mesh.vertices.push(Vertex::new(x + width, y, color));
-        mesh.vertices.push(Vertex::new(x + width, y + height, color));
-        mesh.vertices.push(Vertex::new(x, y + height, color));
+        // Compute color at each vertex for proper gradient interpolation
+        let c0 = fill_color_at(fill, x, y);
+        let c1 = fill_color_at(fill, x + width, y);
+        let c2 = fill_color_at(fill, x + width, y + height);
+        let c3 = fill_color_at(fill, x, y + height);
+
+        mesh.vertices.push(Vertex::new(x, y, c0));
+        mesh.vertices.push(Vertex::new(x + width, y, c1));
+        mesh.vertices.push(Vertex::new(x + width, y + height, c2));
+        mesh.vertices.push(Vertex::new(x, y + height, c3));
 
         mesh.indices.extend_from_slice(&[
             base,
@@ -197,7 +202,8 @@ impl Tessellator {
     }
 
     fn tessellate_fill(&mut self, path: &Path, fill: &Fill, mesh: &mut Mesh) {
-        let color = fill_to_color(fill);
+        // Clone fill for closure
+        let fill_ref = fill.clone();
 
         let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();
 
@@ -205,7 +211,10 @@ impl Tessellator {
             path,
             &FillOptions::default(),
             &mut BuffersBuilder::new(&mut buffers, |vertex: FillVertex| {
-                Vertex::new(vertex.position().x, vertex.position().y, color)
+                let x = vertex.position().x;
+                let y = vertex.position().y;
+                let color = fill_color_at(&fill_ref, x, y);
+                Vertex::new(x, y, color)
             }),
         );
 
@@ -308,7 +317,7 @@ fn fill_to_color(fill: &Fill) -> [f32; 4] {
     match fill {
         Fill::Solid(c) => [c.r, c.g, c.b, c.a],
         Fill::LinearGradient(g) => {
-            // For now, just use the first stop color
+            // For solid color fallback, use the first stop color
             g.stops.first()
                 .map(|s| [s.color.r, s.color.g, s.color.b, s.color.a])
                 .unwrap_or([1.0, 1.0, 1.0, 1.0])
@@ -317,6 +326,94 @@ fn fill_to_color(fill: &Fill) -> [f32; 4] {
             g.stops.first()
                 .map(|s| [s.color.r, s.color.g, s.color.b, s.color.a])
                 .unwrap_or([1.0, 1.0, 1.0, 1.0])
+        }
+    }
+}
+
+/// Sample a linear gradient at position t (0.0 to 1.0).
+fn sample_linear_gradient(gradient: &crate::primitives::LinearGradient, t: f32) -> [f32; 4] {
+    sample_gradient_stops(&gradient.stops, t)
+}
+
+/// Sample a radial gradient at distance t from center (0.0 to 1.0).
+fn sample_radial_gradient(gradient: &crate::primitives::RadialGradient, t: f32) -> [f32; 4] {
+    sample_gradient_stops(&gradient.stops, t)
+}
+
+/// Sample gradient stops at position t (0.0 to 1.0).
+fn sample_gradient_stops(stops: &[crate::primitives::GradientStop], t: f32) -> [f32; 4] {
+    if stops.is_empty() {
+        return [1.0, 1.0, 1.0, 1.0];
+    }
+    if stops.len() == 1 {
+        let c = &stops[0].color;
+        return [c.r, c.g, c.b, c.a];
+    }
+
+    let t = t.clamp(0.0, 1.0);
+
+    // Find surrounding stops
+    let mut prev = &stops[0];
+    for stop in stops.iter() {
+        if stop.offset >= t {
+            if stop.offset == prev.offset {
+                let c = &stop.color;
+                return [c.r, c.g, c.b, c.a];
+            }
+            // Interpolate between prev and stop
+            let local_t = (t - prev.offset) / (stop.offset - prev.offset);
+            return lerp_color(&prev.color, &stop.color, local_t);
+        }
+        prev = stop;
+    }
+
+    // Past the last stop
+    let c = &stops.last().unwrap().color;
+    [c.r, c.g, c.b, c.a]
+}
+
+/// Linear interpolation between two colors.
+fn lerp_color(a: &seed_core::types::Color, b: &seed_core::types::Color, t: f32) -> [f32; 4] {
+    [
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+        a.a + (b.a - a.a) * t,
+    ]
+}
+
+/// Calculate the gradient t value for a point given a linear gradient.
+fn linear_gradient_t(gradient: &crate::primitives::LinearGradient, x: f32, y: f32) -> f32 {
+    let dx = gradient.end.x - gradient.start.x;
+    let dy = gradient.end.y - gradient.start.y;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 0.0001 {
+        return 0.0;
+    }
+    let px = x - gradient.start.x;
+    let py = y - gradient.start.y;
+    ((px * dx + py * dy) / len_sq).clamp(0.0, 1.0)
+}
+
+/// Calculate the gradient t value for a point given a radial gradient.
+fn radial_gradient_t(gradient: &crate::primitives::RadialGradient, x: f32, y: f32) -> f32 {
+    let dx = x - gradient.center.x;
+    let dy = y - gradient.center.y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    (dist / gradient.radius).clamp(0.0, 1.0)
+}
+
+/// Get the color at a specific position for a fill.
+fn fill_color_at(fill: &Fill, x: f32, y: f32) -> [f32; 4] {
+    match fill {
+        Fill::Solid(c) => [c.r, c.g, c.b, c.a],
+        Fill::LinearGradient(g) => {
+            let t = linear_gradient_t(g, x, y);
+            sample_linear_gradient(g, t)
+        }
+        Fill::RadialGradient(g) => {
+            let t = radial_gradient_t(g, x, y);
+            sample_radial_gradient(g, t)
         }
     }
 }

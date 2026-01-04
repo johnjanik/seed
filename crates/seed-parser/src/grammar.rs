@@ -298,6 +298,34 @@ fn parse_element_header<'a>(content: &'a str, keyword: &str) -> Result<Option<&'
 fn parse_property_value(input: &str) -> Result<PropertyValue, ParseError> {
     let input = input.trim();
 
+    // Transform functions
+    if input.starts_with("rotate(") {
+        return parse_rotate_transform(input).map(PropertyValue::Transform);
+    }
+    if input.starts_with("scale(") {
+        return parse_scale_transform(input).map(PropertyValue::Transform);
+    }
+    if input.starts_with("translate(") {
+        return parse_translate_transform(input).map(PropertyValue::Transform);
+    }
+    if input.starts_with("skew(") {
+        return parse_skew_transform(input).map(PropertyValue::Transform);
+    }
+    if input.starts_with("matrix(") {
+        return parse_matrix_transform(input).map(PropertyValue::Transform);
+    }
+
+    // Shadow functions
+    if input.starts_with("drop-shadow(") {
+        return parse_drop_shadow(input).map(PropertyValue::Shadow);
+    }
+    if input.starts_with("box-shadow(") {
+        return parse_box_shadow(input).map(PropertyValue::Shadow);
+    }
+    if input.starts_with("inset-shadow(") {
+        return parse_inset_shadow(input).map(PropertyValue::Shadow);
+    }
+
     // Gradient functions
     if input.starts_with("linear-gradient(") {
         return parse_linear_gradient(input).map(|g| PropertyValue::Gradient(Gradient::Linear(g)));
@@ -462,6 +490,264 @@ fn parse_conic_gradient(input: &str) -> Result<ConicGradient, ParseError> {
         start_angle,
         stops,
     })
+}
+
+/// Parse a drop shadow: drop-shadow(4px 4px 10px #000000)
+/// Format: drop-shadow(offset-x offset-y blur-radius color)
+fn parse_drop_shadow(input: &str) -> Result<Shadow, ParseError> {
+    let inner = extract_function_args(input, "drop-shadow")?;
+    parse_shadow_values(inner, false)
+}
+
+/// Parse a box shadow: box-shadow(4px 4px 10px 2px #000000)
+/// Format: box-shadow(offset-x offset-y blur-radius spread-radius color)
+fn parse_box_shadow(input: &str) -> Result<Shadow, ParseError> {
+    let inner = extract_function_args(input, "box-shadow")?;
+    parse_shadow_values(inner, false)
+}
+
+/// Parse an inset shadow: inset-shadow(4px 4px 10px #000000)
+fn parse_inset_shadow(input: &str) -> Result<Shadow, ParseError> {
+    let inner = extract_function_args(input, "inset-shadow")?;
+    parse_shadow_values(inner, true)
+}
+
+/// Parse shadow values from the inner part of a shadow function.
+fn parse_shadow_values(input: &str, inset: bool) -> Result<Shadow, ParseError> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+
+    if parts.len() < 3 {
+        return Err(ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: "shadow values: offset-x offset-y blur [spread] color".to_string(),
+            line: 0,
+            column: 0,
+        });
+    }
+
+    // Parse offset-x
+    let offset_x = parse_length_value(parts[0]).ok_or_else(|| ParseError::UnexpectedToken {
+        found: parts[0].to_string(),
+        expected: "offset-x length".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+
+    // Parse offset-y
+    let offset_y = parse_length_value(parts[1]).ok_or_else(|| ParseError::UnexpectedToken {
+        found: parts[1].to_string(),
+        expected: "offset-y length".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+
+    // Parse blur
+    let blur = parse_length_value(parts[2]).ok_or_else(|| ParseError::UnexpectedToken {
+        found: parts[2].to_string(),
+        expected: "blur length".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+
+    // Determine if we have spread (4 values before color) or no spread (3 values before color)
+    let (spread, color_str) = if parts.len() >= 5 {
+        // Check if parts[3] looks like a length (has a unit or is a number)
+        if let Some(spread_val) = parse_length_value(parts[3]) {
+            (spread_val, parts[4..].join(" "))
+        } else {
+            (0.0, parts[3..].join(" "))
+        }
+    } else if parts.len() == 4 {
+        (0.0, parts[3].to_string())
+    } else {
+        (0.0, "#000000".to_string())
+    };
+
+    // Parse color
+    let color = parse_shadow_color(&color_str).unwrap_or(Color::rgba(0.0, 0.0, 0.0, 0.5));
+
+    Ok(Shadow {
+        offset_x,
+        offset_y,
+        blur,
+        spread,
+        color,
+        inset,
+    })
+}
+
+/// Parse a length value and return pixels.
+fn parse_length_value(input: &str) -> Option<f64> {
+    let input = input.trim();
+    if let Ok((_, (num, unit))) = parse_number_with_unit(input) {
+        let length = make_length(num, unit);
+        length.to_px(None)
+    } else if let Ok((rest, num)) = number(input) {
+        if rest.is_empty() || rest.chars().all(|c| c.is_whitespace()) {
+            Some(num)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Parse a color value (returns Option for shadow parsing).
+fn parse_shadow_color(input: &str) -> Option<Color> {
+    let input = input.trim();
+    if let Some(hex) = input.strip_prefix('#') {
+        Color::from_hex(hex)
+    } else if input.starts_with("rgb(") || input.starts_with("rgba(") {
+        parse_rgb_color(input)
+    } else {
+        // Named colors
+        match input.to_lowercase().as_str() {
+            "black" => Some(Color::BLACK),
+            "white" => Some(Color::WHITE),
+            "transparent" => Some(Color::TRANSPARENT),
+            "red" => Some(Color::rgb(1.0, 0.0, 0.0)),
+            "green" => Some(Color::rgb(0.0, 0.5, 0.0)),
+            "blue" => Some(Color::rgb(0.0, 0.0, 1.0)),
+            "yellow" => Some(Color::rgb(1.0, 1.0, 0.0)),
+            "cyan" => Some(Color::rgb(0.0, 1.0, 1.0)),
+            "magenta" => Some(Color::rgb(1.0, 0.0, 1.0)),
+            "gray" | "grey" => Some(Color::rgb(0.5, 0.5, 0.5)),
+            _ => None,
+        }
+    }
+}
+
+/// Parse rotate() transform: rotate(45deg)
+fn parse_rotate_transform(input: &str) -> Result<Transform, ParseError> {
+    let inner = extract_function_args(input, "rotate")?;
+    let angle = parse_angle(inner.trim()).ok_or_else(|| ParseError::UnexpectedToken {
+        found: inner.to_string(),
+        expected: "angle (e.g., 45deg)".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+    Ok(Transform::rotate(angle))
+}
+
+/// Parse scale() transform: scale(1.5) or scale(1.5, 2.0)
+fn parse_scale_transform(input: &str) -> Result<Transform, ParseError> {
+    let inner = extract_function_args(input, "scale")?;
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+
+    let sx = parts[0].parse::<f64>().map_err(|_| ParseError::UnexpectedToken {
+        found: parts[0].to_string(),
+        expected: "scale factor".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+
+    let sy = if parts.len() > 1 {
+        parts[1].parse::<f64>().unwrap_or(sx)
+    } else {
+        sx
+    };
+
+    Ok(Transform::scale(sx, sy))
+}
+
+/// Parse translate() transform: translate(10px, 20px)
+fn parse_translate_transform(input: &str) -> Result<Transform, ParseError> {
+    let inner = extract_function_args(input, "translate")?;
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+
+    let tx = parse_length_value(parts[0]).ok_or_else(|| ParseError::UnexpectedToken {
+        found: parts[0].to_string(),
+        expected: "translate x value".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+
+    let ty = if parts.len() > 1 {
+        parse_length_value(parts[1]).unwrap_or(0.0)
+    } else {
+        0.0
+    };
+
+    Ok(Transform::translate(tx, ty))
+}
+
+/// Parse skew() transform: skew(10deg, 20deg)
+fn parse_skew_transform(input: &str) -> Result<Transform, ParseError> {
+    let inner = extract_function_args(input, "skew")?;
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+
+    let ax = parse_angle(parts[0]).ok_or_else(|| ParseError::UnexpectedToken {
+        found: parts[0].to_string(),
+        expected: "skew angle".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+
+    let ay = if parts.len() > 1 {
+        parse_angle(parts[1]).unwrap_or(0.0)
+    } else {
+        0.0
+    };
+
+    Ok(Transform { operations: vec![TransformOp::Skew(ax, ay)] })
+}
+
+/// Parse matrix() transform: matrix(a, b, c, d, e, f)
+fn parse_matrix_transform(input: &str) -> Result<Transform, ParseError> {
+    let inner = extract_function_args(input, "matrix")?;
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+
+    if parts.len() != 6 {
+        return Err(ParseError::UnexpectedToken {
+            found: inner.to_string(),
+            expected: "6 matrix values".to_string(),
+            line: 0,
+            column: 0,
+        });
+    }
+
+    let values: Result<Vec<f64>, _> = parts.iter().map(|s| s.parse::<f64>()).collect();
+    let values = values.map_err(|_| ParseError::UnexpectedToken {
+        found: inner.to_string(),
+        expected: "numeric matrix values".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+
+    Ok(Transform {
+        operations: vec![TransformOp::Matrix([
+            values[0], values[1], values[2], values[3], values[4], values[5],
+        ])],
+    })
+}
+
+/// Parse rgb() or rgba() color.
+fn parse_rgb_color(input: &str) -> Option<Color> {
+    let (name, inner) = if input.starts_with("rgba(") {
+        ("rgba", input.strip_prefix("rgba(")?.strip_suffix(')')?)
+    } else if input.starts_with("rgb(") {
+        ("rgb", input.strip_prefix("rgb(")?.strip_suffix(')')?)
+    } else {
+        return None;
+    };
+
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+
+    if name == "rgba" && parts.len() == 4 {
+        let r = parts[0].parse::<f32>().ok()? / 255.0;
+        let g = parts[1].parse::<f32>().ok()? / 255.0;
+        let b = parts[2].parse::<f32>().ok()? / 255.0;
+        let a = parts[3].parse::<f32>().ok()?;
+        Some(Color::rgba(r, g, b, a))
+    } else if name == "rgb" && parts.len() == 3 {
+        let r = parts[0].parse::<f32>().ok()? / 255.0;
+        let g = parts[1].parse::<f32>().ok()? / 255.0;
+        let b = parts[2].parse::<f32>().ok()? / 255.0;
+        Some(Color::rgb(r, g, b))
+    } else {
+        None
+    }
 }
 
 /// Extract the inner content of a function call.
@@ -1370,6 +1656,140 @@ mod tests {
                 assert_eq!(lg.stops[2].position, 1.0);
             } else {
                 panic!("Expected linear gradient");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_drop_shadow() {
+        let input = r#"Frame:
+  shadow: drop-shadow(4px 8px 10px #000000)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            assert_eq!(frame.properties.len(), 1);
+            if let PropertyValue::Shadow(shadow) = &frame.properties[0].value {
+                assert_eq!(shadow.offset_x, 4.0);
+                assert_eq!(shadow.offset_y, 8.0);
+                assert_eq!(shadow.blur, 10.0);
+                assert!(!shadow.inset);
+            } else {
+                panic!("Expected shadow property");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_box_shadow_with_spread() {
+        let input = r#"Frame:
+  shadow: box-shadow(2px 4px 6px 2px #ff0000)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            if let PropertyValue::Shadow(shadow) = &frame.properties[0].value {
+                assert_eq!(shadow.offset_x, 2.0);
+                assert_eq!(shadow.offset_y, 4.0);
+                assert_eq!(shadow.blur, 6.0);
+                assert_eq!(shadow.spread, 2.0);
+                assert!(!shadow.inset);
+            } else {
+                panic!("Expected shadow property");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_inset_shadow() {
+        let input = r#"Frame:
+  shadow: inset-shadow(2px 2px 5px black)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            if let PropertyValue::Shadow(shadow) = &frame.properties[0].value {
+                assert_eq!(shadow.offset_x, 2.0);
+                assert_eq!(shadow.offset_y, 2.0);
+                assert_eq!(shadow.blur, 5.0);
+                assert!(shadow.inset);
+            } else {
+                panic!("Expected shadow property");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_rotate_transform() {
+        let input = r#"Frame:
+  transform: rotate(45deg)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            if let PropertyValue::Transform(transform) = &frame.properties[0].value {
+                assert_eq!(transform.operations.len(), 1);
+                if let TransformOp::Rotate(angle) = transform.operations[0] {
+                    assert_eq!(angle, 45.0);
+                } else {
+                    panic!("Expected Rotate operation");
+                }
+            } else {
+                panic!("Expected transform property");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_scale_transform() {
+        let input = r#"Frame:
+  transform: scale(1.5, 2.0)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            if let PropertyValue::Transform(transform) = &frame.properties[0].value {
+                if let TransformOp::Scale(sx, sy) = transform.operations[0] {
+                    assert_eq!(sx, 1.5);
+                    assert_eq!(sy, 2.0);
+                } else {
+                    panic!("Expected Scale operation");
+                }
+            } else {
+                panic!("Expected transform property");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_translate_transform() {
+        let input = r#"Frame:
+  transform: translate(10px, 20px)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            if let PropertyValue::Transform(transform) = &frame.properties[0].value {
+                if let TransformOp::Translate(tx, ty) = transform.operations[0] {
+                    assert_eq!(tx, 10.0);
+                    assert_eq!(ty, 20.0);
+                } else {
+                    panic!("Expected Translate operation");
+                }
+            } else {
+                panic!("Expected transform property");
             }
         } else {
             panic!("Expected Frame element");

@@ -4,7 +4,7 @@ use glam::{Vec3, Vec4, Mat4};
 use seed_core::types::Color;
 
 use crate::geometry::Mesh;
-use crate::material::{Material, Light};
+use crate::material::{Material, Light, fresnel_schlick, gamma_correct};
 use crate::scene::{Scene3D, Camera};
 
 /// 3D software renderer.
@@ -239,7 +239,7 @@ fn edge_function(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> f32 {
     (p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])
 }
 
-/// Compute Blinn-Phong lighting.
+/// Compute PBR-inspired lighting with Fresnel and gamma correction.
 fn compute_lighting(
     position: Vec3,
     normal: Vec3,
@@ -248,32 +248,32 @@ fn compute_lighting(
     camera_pos: Vec3,
 ) -> Color {
     let view_dir = (camera_pos - position).normalize();
+    let n_dot_v = normal.dot(view_dir).max(0.0);
+
+    // F0 for Fresnel (dielectric = 0.04, metal uses albedo)
+    let f0 = if material.metallic > 0.5 {
+        [material.color.r, material.color.g, material.color.b]
+    } else {
+        [0.04, 0.04, 0.04]
+    };
+
     let mut result = Color::rgb(0.0, 0.0, 0.0);
 
     for light in lights {
         match light {
             Light::Directional { direction, color, intensity } => {
                 let light_dir = Vec3::new(-direction[0], -direction[1], -direction[2]).normalize();
-
-                // Diffuse
-                let n_dot_l = normal.dot(light_dir).max(0.0);
-                let diffuse = n_dot_l * intensity;
-
-                // Specular (Blinn-Phong)
-                let half_vec = (light_dir + view_dir).normalize();
-                let n_dot_h = normal.dot(half_vec).max(0.0);
-                let shininess = (1.0 - material.roughness) * 128.0 + 1.0;
-                let specular = n_dot_h.powf(shininess) * intensity * (1.0 - material.roughness);
-
-                // Combine with material and light color
-                result.r += (material.color.r * diffuse + specular) * color.r;
-                result.g += (material.color.g * diffuse + specular) * color.g;
-                result.b += (material.color.b * diffuse + specular) * color.b;
+                add_light_contribution(
+                    &mut result, normal, view_dir, light_dir, n_dot_v,
+                    color, *intensity, material, &f0,
+                );
             }
             Light::Ambient { color, intensity } => {
-                result.r += material.color.r * color.r * intensity;
-                result.g += material.color.g * color.g * intensity;
-                result.b += material.color.b * color.b * intensity;
+                // Ambient with AO
+                let ao = material.ambient_occlusion;
+                result.r += material.color.r * color.r * intensity * ao;
+                result.g += material.color.g * color.g * intensity * ao;
+                result.b += material.color.b * color.b * intensity * ao;
             }
             Light::Point { position: light_pos, color, intensity, range } => {
                 let to_light = Vec3::new(light_pos[0], light_pos[1], light_pos[2]) - position;
@@ -281,21 +281,47 @@ fn compute_lighting(
 
                 if distance < *range {
                     let light_dir = to_light / distance;
-                    let attenuation = (1.0 - distance / range).max(0.0) * intensity;
+                    // Quadratic attenuation for more realistic falloff
+                    let attenuation = ((1.0 - (distance / range).powi(4)).max(0.0)).powi(2)
+                        / (distance * distance + 1.0);
+                    let effective_intensity = intensity * attenuation;
 
-                    // Diffuse
-                    let n_dot_l = normal.dot(light_dir).max(0.0);
-                    let diffuse = n_dot_l * attenuation;
+                    add_light_contribution(
+                        &mut result, normal, view_dir, light_dir, n_dot_v,
+                        color, effective_intensity, material, &f0,
+                    );
+                }
+            }
+            Light::Spot { position: light_pos, direction, color, intensity, range, inner_angle, outer_angle } => {
+                let to_light = Vec3::new(light_pos[0], light_pos[1], light_pos[2]) - position;
+                let distance = to_light.length();
 
-                    // Specular
-                    let half_vec = (light_dir + view_dir).normalize();
-                    let n_dot_h = normal.dot(half_vec).max(0.0);
-                    let shininess = (1.0 - material.roughness) * 128.0 + 1.0;
-                    let specular = n_dot_h.powf(shininess) * attenuation * (1.0 - material.roughness);
+                if distance < *range {
+                    let light_dir = to_light / distance;
+                    let spot_dir = Vec3::new(-direction[0], -direction[1], -direction[2]).normalize();
 
-                    result.r += (material.color.r * diffuse + specular) * color.r;
-                    result.g += (material.color.g * diffuse + specular) * color.g;
-                    result.b += (material.color.b * diffuse + specular) * color.b;
+                    // Spot light cone attenuation
+                    let cos_angle = light_dir.dot(spot_dir);
+                    let cos_inner = inner_angle.cos();
+                    let cos_outer = outer_angle.cos();
+
+                    if cos_angle > cos_outer {
+                        let spot_factor = if cos_angle > cos_inner {
+                            1.0
+                        } else {
+                            // Smooth falloff between inner and outer cone
+                            let t = (cos_angle - cos_outer) / (cos_inner - cos_outer);
+                            t * t * (3.0 - 2.0 * t) // Smoothstep
+                        };
+
+                        let distance_attenuation = (1.0 - distance / range).max(0.0);
+                        let effective_intensity = intensity * spot_factor * distance_attenuation;
+
+                        add_light_contribution(
+                            &mut result, normal, view_dir, light_dir, n_dot_v,
+                            color, effective_intensity, material, &f0,
+                        );
+                    }
                 }
             }
         }
@@ -308,13 +334,64 @@ fn compute_lighting(
         result.b += emissive.b;
     }
 
-    // Clamp
-    result.r = result.r.clamp(0.0, 1.0);
-    result.g = result.g.clamp(0.0, 1.0);
-    result.b = result.b.clamp(0.0, 1.0);
-    result.a = 1.0;
+    // Apply gamma correction for proper display
+    let corrected = gamma_correct(Color {
+        r: result.r.clamp(0.0, 1.0),
+        g: result.g.clamp(0.0, 1.0),
+        b: result.b.clamp(0.0, 1.0),
+        a: 1.0,
+    });
 
-    result
+    corrected
+}
+
+/// Add light contribution with Fresnel and specular.
+#[inline]
+fn add_light_contribution(
+    result: &mut Color,
+    normal: Vec3,
+    view_dir: Vec3,
+    light_dir: Vec3,
+    _n_dot_v: f32,
+    light_color: &Color,
+    intensity: f32,
+    material: &Material,
+    f0: &[f32; 3],
+) {
+    // Diffuse
+    let n_dot_l = normal.dot(light_dir).max(0.0);
+    if n_dot_l <= 0.0 {
+        return;
+    }
+
+    // Half vector for specular
+    let half_vec = (light_dir + view_dir).normalize();
+    let n_dot_h = normal.dot(half_vec).max(0.0);
+    let v_dot_h = view_dir.dot(half_vec).max(0.0);
+
+    // Fresnel
+    let fresnel = fresnel_schlick(v_dot_h, f0[0]);
+
+    // Roughness-based shininess
+    let shininess = (1.0 - material.roughness) * 256.0 + 4.0;
+    let specular_strength = n_dot_h.powf(shininess) * (1.0 - material.roughness);
+
+    // Combine: for metals, specular uses albedo color; for dielectrics, white specular
+    let diffuse = n_dot_l * intensity;
+    let specular = specular_strength * intensity * fresnel;
+
+    if material.metallic > 0.5 {
+        // Metallic: albedo affects specular, reduced diffuse
+        let metal_diffuse = diffuse * (1.0 - fresnel) * 0.1;
+        result.r += (material.color.r * metal_diffuse + material.color.r * specular) * light_color.r;
+        result.g += (material.color.g * metal_diffuse + material.color.g * specular) * light_color.g;
+        result.b += (material.color.b * metal_diffuse + material.color.b * specular) * light_color.b;
+    } else {
+        // Dielectric: normal diffuse + white specular
+        result.r += (material.color.r * diffuse * (1.0 - fresnel) + specular) * light_color.r;
+        result.g += (material.color.g * diffuse * (1.0 - fresnel) + specular) * light_color.g;
+        result.b += (material.color.b * diffuse * (1.0 - fresnel) + specular) * light_color.b;
+    }
 }
 
 #[cfg(test)]

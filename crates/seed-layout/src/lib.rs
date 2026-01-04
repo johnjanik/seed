@@ -26,8 +26,10 @@ mod tree;
 mod compute;
 mod auto_layout;
 mod text;
+mod grid;
 
 pub use tree::{LayoutTree, LayoutNode, LayoutNodeId, Bounds};
 pub use compute::{compute_layout, LayoutOptions};
-pub use auto_layout::{AutoLayout, Direction, Alignment, Distribution};
+pub use auto_layout::{AutoLayout, Direction, Alignment, Distribution, Padding, ChildSize};
 pub use text::{TextMetrics, measure_text};
+pub use grid::{GridLayout, TrackSize, ItemAlignment, ContentAlignment, GridPlacement, GridChildSize};

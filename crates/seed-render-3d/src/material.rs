@@ -103,6 +103,18 @@ pub enum Light {
         intensity: f32,
         range: f32,
     },
+    /// Spot light.
+    Spot {
+        position: [f32; 3],
+        direction: [f32; 3],
+        color: Color,
+        intensity: f32,
+        range: f32,
+        /// Inner cone angle in radians (full intensity)
+        inner_angle: f32,
+        /// Outer cone angle in radians (falloff to zero)
+        outer_angle: f32,
+    },
     /// Ambient light.
     Ambient {
         color: Color,
@@ -119,6 +131,27 @@ impl Light {
     /// Create a point light.
     pub fn point(position: [f32; 3], color: Color, intensity: f32, range: f32) -> Self {
         Light::Point { position, color, intensity, range }
+    }
+
+    /// Create a spot light.
+    pub fn spot(
+        position: [f32; 3],
+        direction: [f32; 3],
+        color: Color,
+        intensity: f32,
+        range: f32,
+        inner_angle: f32,
+        outer_angle: f32,
+    ) -> Self {
+        Light::Spot {
+            position,
+            direction,
+            color,
+            intensity,
+            range,
+            inner_angle,
+            outer_angle,
+        }
     }
 
     /// Create an ambient light.
@@ -141,6 +174,50 @@ impl Light {
             color: Color::rgb(0.3, 0.35, 0.4),
             intensity: 0.3,
         }
+    }
+}
+
+/// Calculate Fresnel reflectance using Schlick's approximation.
+/// Returns the Fresnel factor at the given view angle.
+pub fn fresnel_schlick(cos_theta: f32, f0: f32) -> f32 {
+    f0 + (1.0 - f0) * (1.0 - cos_theta).powf(5.0)
+}
+
+/// Calculate Fresnel reflectance for RGB (metallic materials).
+pub fn fresnel_schlick_rgb(cos_theta: f32, f0: [f32; 3]) -> [f32; 3] {
+    let one_minus_cos = (1.0 - cos_theta).powf(5.0);
+    [
+        f0[0] + (1.0 - f0[0]) * one_minus_cos,
+        f0[1] + (1.0 - f0[1]) * one_minus_cos,
+        f0[2] + (1.0 - f0[2]) * one_minus_cos,
+    ]
+}
+
+/// Apply gamma correction (linear to sRGB).
+pub fn gamma_correct(color: Color) -> Color {
+    Color {
+        r: linear_to_srgb(color.r),
+        g: linear_to_srgb(color.g),
+        b: linear_to_srgb(color.b),
+        a: color.a,
+    }
+}
+
+/// Convert linear color to sRGB.
+fn linear_to_srgb(value: f32) -> f32 {
+    if value <= 0.0031308 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Convert sRGB color to linear.
+pub fn srgb_to_linear(value: f32) -> f32 {
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
     }
 }
 
@@ -169,5 +246,54 @@ mod tests {
         } else {
             panic!("Expected directional light");
         }
+    }
+
+    #[test]
+    fn test_light_spot() {
+        let light = Light::spot(
+            [0.0, 10.0, 0.0],
+            [0.0, -1.0, 0.0],
+            Color::rgb(1.0, 1.0, 1.0),
+            1.0,
+            20.0,
+            0.2,
+            0.4,
+        );
+        if let Light::Spot { position, inner_angle, outer_angle, .. } = light {
+            assert!((position[1] - 10.0).abs() < 0.001);
+            assert!((inner_angle - 0.2).abs() < 0.001);
+            assert!((outer_angle - 0.4).abs() < 0.001);
+        } else {
+            panic!("Expected spot light");
+        }
+    }
+
+    #[test]
+    fn test_fresnel_schlick() {
+        // At normal incidence (cos_theta = 1), Fresnel should equal F0
+        let f0 = 0.04;
+        let fresnel = fresnel_schlick(1.0, f0);
+        assert!((fresnel - f0).abs() < 0.001);
+
+        // At grazing angle (cos_theta = 0), Fresnel should approach 1
+        let fresnel_grazing = fresnel_schlick(0.0, f0);
+        assert!(fresnel_grazing > 0.9);
+    }
+
+    #[test]
+    fn test_gamma_correction() {
+        // Linear 0.5 should become ~0.735 in sRGB
+        let linear = Color::rgb(0.5, 0.5, 0.5);
+        let srgb = gamma_correct(linear);
+        assert!(srgb.r > 0.7 && srgb.r < 0.8);
+        assert!(srgb.g > 0.7 && srgb.g < 0.8);
+        assert!(srgb.b > 0.7 && srgb.b < 0.8);
+    }
+
+    #[test]
+    fn test_srgb_to_linear() {
+        // sRGB 0.5 should become ~0.214 in linear
+        let linear = srgb_to_linear(0.5);
+        assert!(linear > 0.2 && linear < 0.25);
     }
 }

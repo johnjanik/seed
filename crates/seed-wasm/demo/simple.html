@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Seed Simple Demo</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #1a1a2e; color: #eee; }
+        #status { padding: 10px; background: #333; margin-bottom: 20px; }
+        #editor { width: 100%; height: 200px; font-family: monospace; }
+        #preview { background: white; padding: 20px; margin-top: 20px; }
+        button { padding: 10px 20px; margin: 10px 5px 10px 0; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>Seed Engine - Simple Demo</h1>
+    <div id="status">Loading...</div>
+    <textarea id="editor">Frame
+  width: 200px
+  height: 100px
+  fill: #4a90d9
+  corner-radius: 8px</textarea>
+    <br>
+    <button id="render-btn">Render</button>
+    <div id="preview">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script type="module">
+        // Immediate DOM access - like test.html
+        const status = document.getElementById('status');
+        const editor = document.getElementById('editor');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        status.textContent = 'JS loaded...';
+        console.log('Step 1: JS loaded');
+
+        let engine = null;
+
+        // Attach event listener immediately
+        document.getElementById('render-btn').addEventListener('click', () => {
+            console.log('Render clicked');
+            if (!engine) {
+                alert('Engine not ready yet');
+                return;
+            }
+            doRender();
+        });
+        console.log('Step 2: Event listener attached');
+
+        function doRender() {
+            try {
+                engine.parse(editor.value);
+                engine.layout();
+                const pngData = engine.exportPng();
+                const blob = new Blob([pngData], { type: 'image/png' });
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                img.onload = () => {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    URL.revokeObjectURL(url);
+                };
+                img.src = url;
+                status.textContent = 'Rendered!';
+            } catch (e) {
+                status.textContent = 'Error: ' + e.message;
+                console.error(e);
+            }
+        }
+
+        // Top-level await for WASM loading
+        try {
+            console.log('Step 3: Loading WASM module...');
+            status.textContent = 'Loading WASM...';
+
+            const module = await import('../pkg/seed_wasm.js');
+            console.log('Step 4: Module loaded');
+
+            status.textContent = 'Initializing...';
+            await module.default();
+            console.log('Step 5: WASM initialized');
+
+            engine = new module.SeedEngine();
+            const version = module.getVersion();
+            console.log('Step 6: Ready, version:', version);
+
+            status.textContent = 'Ready (v' + version + ')';
+            doRender();
+        } catch (e) {
+            status.textContent = 'Error: ' + e.message;
+            console.error('Load error:', e);
+        }
+    </script>
+</body>
+</html>

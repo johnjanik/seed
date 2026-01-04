@@ -181,7 +181,7 @@ static CRC_TABLE: [u32; 256] = [
     0x8bbeb8ea, 0xfcb9887c, 0x62dd1ddf, 0x15da2d49, 0x8cd37cf3, 0xfbd44c65,
     0x4db26158, 0x3ab551ce, 0xa3bc0074, 0xd4bb30e2, 0x4adfa541, 0x3dd895d7,
     0xa4d1c46d, 0xd3d6f4fb, 0x4369e96a, 0x346ed9fc, 0xad678846, 0xda60b8d0,
-    0x44042d73, 0x33031de5, 0xaa0a4c5f, 0xdd0d7a0b, 0x5005713c, 0x270241aa,
+    0x44042d73, 0x33031de5, 0xaa0a4c5f, 0xdd0d7cc9, 0x5005713c, 0x270241aa,
     0xbe0b1010, 0xc90c2086, 0x5768b525, 0x206f85b3, 0xb966d409, 0xce61e49f,
     0x5edef90e, 0x29d9c998, 0xb0d09822, 0xc7d7a8b4, 0x59b33d17, 0x2eb40d81,
     0xb7bd5c3b, 0xc0ba6cad, 0xedb88320, 0x9abfb3b6, 0x03b6e20c, 0x74b1d29a,
@@ -203,7 +203,7 @@ static CRC_TABLE: [u32; 256] = [
     0x616bffd3, 0x166ccf45, 0xa00ae278, 0xd70dd2ee, 0x4e048354, 0x3903b3c2,
     0xa7672661, 0xd06016f7, 0x4969474d, 0x3e6e77db, 0xaed16a4a, 0xd9d65adc,
     0x40df0b66, 0x37d83bf0, 0xa9bcae53, 0xdebb9ec5, 0x47b2cf7f, 0x30b5ffe9,
-    0xbdbdf21c, 0xcabac28a, 0x53b39330, 0x24b4a3a6, 0xbad03605, 0xcdd706b3,
+    0xbdbdf21c, 0xcabac28a, 0x53b39330, 0x24b4a3a6, 0xbad03605, 0xcdd70693,
     0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d,
 ];
@@ -217,7 +217,42 @@ mod tests {
     fn test_crc32() {
         // Test with known value
         let data = b"123456789";
-        assert_eq!(crc32(data), 0xCBF43926);
+        let crc = crc32(data);
+        println!("CRC32 of '123456789': {:#010x}", crc);
+        assert_eq!(crc, 0xCBF43926);
+    }
+
+    #[test]
+    fn test_crc32_ihdr() {
+        // IHDR chunk: type bytes + data bytes (width=200, height=100, 8-bit RGBA)
+        let ihdr: [u8; 17] = [
+            0x49, 0x48, 0x44, 0x52,  // 'IHDR'
+            0x00, 0x00, 0x00, 0xC8,  // width = 200
+            0x00, 0x00, 0x00, 0x64,  // height = 100
+            0x08, 0x06, 0x00, 0x00, 0x00  // 8-bit, RGBA, no compression/filter/interlace
+        ];
+        println!("Input bytes: {:?}", ihdr);
+        println!("Input len: {}", ihdr.len());
+
+        // Test byte by byte
+        let test_single = crc32(&[0x49]);
+        println!("CRC32([0x49]): {:#010x}", test_single);
+
+        let crc = crc32(&ihdr);
+        println!("IHDR CRC: {:#010x}", crc);
+
+        // Also test using the table lookup path
+        let mut manual_crc: u32 = 0xFFFFFFFF;
+        for byte in ihdr.iter() {
+            let index = ((manual_crc ^ (*byte as u32)) & 0xFF) as usize;
+            println!("byte={:#04x}, index={}, table[index]={:#010x}", byte, index, CRC_TABLE[index]);
+            manual_crc = CRC_TABLE[index] ^ (manual_crc >> 8);
+        }
+        manual_crc ^= 0xFFFFFFFF;
+        println!("Manual CRC: {:#010x}", manual_crc);
+
+        // Expected from Python: 0xc3867f0b
+        assert_eq!(crc, 0xc3867f0b);
     }
 
     #[test]

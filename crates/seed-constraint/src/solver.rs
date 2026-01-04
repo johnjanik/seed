@@ -129,11 +129,13 @@ impl ConstraintSystem {
         frame: &FrameElement,
         parent: Option<&str>,
     ) -> Result<String, ConstraintError> {
+        // Generate name matching layout system's convention
+        self.id_counter += 1;
         let name = frame
             .name
             .as_ref()
             .map(|n| n.0.clone())
-            .unwrap_or_else(|| format!("_frame_{}", self.id_counter));
+            .unwrap_or_else(|| format!("frame_{}", self.id_counter));
 
         // Create variables for layout properties
         let _vars = self.create_element_vars(&name);
@@ -151,6 +153,9 @@ impl ConstraintSystem {
         for constraint in &frame.constraints {
             self.add_constraint(&name, constraint)?;
         }
+
+        // Also process layout-related properties as implicit constraints
+        self.add_properties_as_constraints(&name, &frame.properties)?;
 
         // Process children
         for child in &frame.children {
@@ -170,11 +175,13 @@ impl ConstraintSystem {
         text: &TextElement,
         parent: Option<&str>,
     ) -> Result<String, ConstraintError> {
+        // Generate name matching layout system's convention
+        self.id_counter += 1;
         let name = text
             .name
             .as_ref()
             .map(|n| n.0.clone())
-            .unwrap_or_else(|| format!("_text_{}", self.id_counter));
+            .unwrap_or_else(|| format!("text_{}", self.id_counter));
 
         // Create variables for layout properties
         let _vars = self.create_element_vars(&name);
@@ -208,8 +215,9 @@ impl ConstraintSystem {
             height: self.solver.new_variable(),
         };
 
+        // Use current counter value (already incremented by add_frame/add_text)
         let id = ElementId(self.id_counter);
-        self.id_counter += 1;
+        // Don't increment here - already done in add_frame/add_text
 
         self.element_vars.insert(name.to_string(), vars);
         self.element_names.insert(id, name.to_string());
@@ -225,6 +233,61 @@ impl ConstraintSystem {
     ) -> Result<(), ConstraintError> {
         // By default, children start at (0, 0) relative to parent
         // Explicit constraints will override this
+        Ok(())
+    }
+
+    /// Convert layout-related properties to implicit constraints.
+    fn add_properties_as_constraints(
+        &mut self,
+        element_name: &str,
+        properties: &[ast::Property],
+    ) -> Result<(), ConstraintError> {
+        use seed_core::ast::{Expression as AstExpr, PropertyValue};
+
+        for prop in properties {
+            // Only process layout-related properties
+            let layout_prop = match prop.name.as_str() {
+                "width" | "height" | "x" | "y" | "left" | "top" => true,
+                _ => false,
+            };
+
+            if !layout_prop {
+                continue;
+            }
+
+            // Convert property value to expression
+            let expression = match &prop.value {
+                PropertyValue::Length(len) => AstExpr::Length(len.clone()),
+                PropertyValue::Number(n) => AstExpr::Literal(*n),
+                _ => continue, // Skip non-numeric values
+            };
+
+            // Map property name to constraint property
+            let constraint_prop = match prop.name.as_str() {
+                "left" => "x",
+                "top" => "y",
+                other => other,
+            };
+
+            // Add as equality constraint with required strength
+            let vars = self.element_vars.get(element_name).ok_or_else(|| {
+                ConstraintError::UnknownProperty {
+                    property: element_name.to_string(),
+                    span: Default::default(),
+                }
+            })?;
+
+            let var = self.property_to_variable(vars, constraint_prop)?;
+            let expr = self.build_expression(var, &expression)?;
+
+            self.solver
+                .add_constraint(Constraint::new(expr, Relation::Equal, Strength::REQUIRED))
+                .map_err(|_| ConstraintError::Unsatisfiable {
+                    constraint_desc: format!("{}.{} = {:?}", element_name, constraint_prop, prop.value),
+                    span: Default::default(),
+                })?;
+        }
+
         Ok(())
     }
 

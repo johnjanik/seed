@@ -1,6 +1,6 @@
 //! Abstract Syntax Tree types for Seed documents.
 
-use crate::types::{Color, Length, Identifier, Gradient};
+use crate::types::{Color, Length, Identifier, Gradient, Shadow, Transform};
 use smallvec::SmallVec;
 
 /// A complete Seed document.
@@ -172,6 +172,8 @@ pub struct Property {
 pub enum PropertyValue {
     Color(Color),
     Gradient(Gradient),
+    Shadow(Shadow),
+    Transform(Transform),
     Length(Length),
     Number(f64),
     String(String),

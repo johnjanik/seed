@@ -162,6 +162,12 @@ impl AutoLayout {
         self
     }
 
+    /// Enable wrapping.
+    pub fn with_wrap(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
+        self
+    }
+
     /// Compute layout for children within a container.
     pub fn layout(&self, container: Bounds, children: &[ChildSize]) -> Vec<Bounds> {
         if children.is_empty() {
@@ -171,21 +177,40 @@ impl AutoLayout {
         let content_width = container.width - self.padding.horizontal();
         let content_height = container.height - self.padding.vertical();
 
-        match self.direction {
-            Direction::Horizontal => self.layout_horizontal(
-                container.x + self.padding.left,
-                container.y + self.padding.top,
-                content_width,
-                content_height,
-                children,
-            ),
-            Direction::Vertical => self.layout_vertical(
-                container.x + self.padding.left,
-                container.y + self.padding.top,
-                content_width,
-                content_height,
-                children,
-            ),
+        if self.wrap {
+            match self.direction {
+                Direction::Horizontal => self.layout_horizontal_wrap(
+                    container.x + self.padding.left,
+                    container.y + self.padding.top,
+                    content_width,
+                    content_height,
+                    children,
+                ),
+                Direction::Vertical => self.layout_vertical_wrap(
+                    container.x + self.padding.left,
+                    container.y + self.padding.top,
+                    content_width,
+                    content_height,
+                    children,
+                ),
+            }
+        } else {
+            match self.direction {
+                Direction::Horizontal => self.layout_horizontal(
+                    container.x + self.padding.left,
+                    container.y + self.padding.top,
+                    content_width,
+                    content_height,
+                    children,
+                ),
+                Direction::Vertical => self.layout_vertical(
+                    container.x + self.padding.left,
+                    container.y + self.padding.top,
+                    content_width,
+                    content_height,
+                    children,
+                ),
+            }
         }
     }
 
@@ -367,6 +392,164 @@ impl AutoLayout {
             .collect()
     }
 
+    fn layout_horizontal_wrap(
+        &self,
+        start_x: f64,
+        start_y: f64,
+        content_width: f64,
+        content_height: f64,
+        children: &[ChildSize],
+    ) -> Vec<Bounds> {
+        let mut result = Vec::with_capacity(children.len());
+        let mut x = start_x;
+        let mut y = start_y;
+        let mut row_height = 0.0_f64;
+
+        for child in children {
+            let width = child.width.unwrap_or(child.min_width);
+            let height = child.height.unwrap_or(child.min_height);
+
+            // Check if we need to wrap to next line
+            if x + width > start_x + content_width && x > start_x {
+                // Move to next row
+                x = start_x;
+                y += row_height + self.gap;
+                row_height = 0.0;
+            }
+
+            let final_height = match self.alignment {
+                Alignment::Stretch => content_height.min(row_height.max(height)),
+                _ => height,
+            };
+
+            result.push(Bounds::new(x, y, width, final_height));
+            row_height = row_height.max(height);
+            x += width + self.gap;
+        }
+
+        // Apply cross-axis alignment to each row
+        self.apply_row_alignment(&mut result, start_y, content_height);
+
+        result
+    }
+
+    fn layout_vertical_wrap(
+        &self,
+        start_x: f64,
+        start_y: f64,
+        content_width: f64,
+        content_height: f64,
+        children: &[ChildSize],
+    ) -> Vec<Bounds> {
+        let mut result = Vec::with_capacity(children.len());
+        let mut x = start_x;
+        let mut y = start_y;
+        let mut col_width = 0.0_f64;
+
+        for child in children {
+            let width = child.width.unwrap_or(child.min_width);
+            let height = child.height.unwrap_or(child.min_height);
+
+            // Check if we need to wrap to next column
+            if y + height > start_y + content_height && y > start_y {
+                // Move to next column
+                y = start_y;
+                x += col_width + self.gap;
+                col_width = 0.0;
+            }
+
+            let final_width = match self.alignment {
+                Alignment::Stretch => content_width.min(col_width.max(width)),
+                _ => width,
+            };
+
+            result.push(Bounds::new(x, y, final_width, height));
+            col_width = col_width.max(width);
+            y += height + self.gap;
+        }
+
+        // Apply cross-axis alignment to each column
+        self.apply_column_alignment(&mut result, start_x, content_width);
+
+        result
+    }
+
+    fn apply_row_alignment(&self, bounds: &mut [Bounds], _start_y: f64, _content_height: f64) {
+        if bounds.is_empty() {
+            return;
+        }
+
+        // Group bounds by rows (same y position)
+        let mut i = 0;
+        while i < bounds.len() {
+            let row_y = bounds[i].y;
+            let mut row_height = bounds[i].height;
+            let mut j = i + 1;
+
+            // Find all items in this row
+            while j < bounds.len() && (bounds[j].y - row_y).abs() < 0.001 {
+                row_height = row_height.max(bounds[j].height);
+                j += 1;
+            }
+
+            // Apply alignment to this row
+            for bound in &mut bounds[i..j] {
+                match self.alignment {
+                    Alignment::Start => {} // Already at start
+                    Alignment::Center => {
+                        bound.y += (row_height - bound.height) / 2.0;
+                    }
+                    Alignment::End => {
+                        bound.y += row_height - bound.height;
+                    }
+                    Alignment::Stretch => {
+                        bound.height = row_height;
+                    }
+                }
+            }
+
+            i = j;
+        }
+    }
+
+    fn apply_column_alignment(&self, bounds: &mut [Bounds], _start_x: f64, _content_width: f64) {
+        if bounds.is_empty() {
+            return;
+        }
+
+        // Group bounds by columns (same x position)
+        let mut i = 0;
+        while i < bounds.len() {
+            let col_x = bounds[i].x;
+            let mut col_width = bounds[i].width;
+            let mut j = i + 1;
+
+            // Find all items in this column
+            while j < bounds.len() && (bounds[j].x - col_x).abs() < 0.001 {
+                col_width = col_width.max(bounds[j].width);
+                j += 1;
+            }
+
+            // Apply alignment to this column
+            for bound in &mut bounds[i..j] {
+                match self.alignment {
+                    Alignment::Start => {} // Already at start
+                    Alignment::Center => {
+                        bound.x += (col_width - bound.width) / 2.0;
+                    }
+                    Alignment::End => {
+                        bound.x += col_width - bound.width;
+                    }
+                    Alignment::Stretch => {
+                        bound.width = col_width;
+                    }
+                }
+            }
+
+            i = j;
+        }
+    }
+
     /// Calculate intrinsic size needed to fit all children.
     pub fn intrinsic_size(&self, children: &[ChildSize]) -> (f64, f64) {
         if children.is_empty() {
@@ -505,5 +688,142 @@ mod tests {
         // Height: max(30, 40) + 40 (padding) = 80
         assert!((width - 150.0).abs() < 0.001);
         assert!((height - 80.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_horizontal_wrap() {
+        let layout = AutoLayout::horizontal()
+            .with_gap(10.0)
+            .with_wrap(true);
+        let container = Bounds::new(0.0, 0.0, 120.0, 200.0);
+        let children = vec![
+            ChildSize { width: Some(50.0), height: Some(30.0), ..Default::default() },
+            ChildSize { width: Some(50.0), height: Some(30.0), ..Default::default() },
+            ChildSize { width: Some(50.0), height: Some(30.0), ..Default::default() },
+        ];
+
+        let result = layout.layout(container, &children);
+
+        assert_eq!(result.len(), 3);
+        // First row: items 0 and 1 (50 + 10 + 50 = 110 < 120)
+        assert!((result[0].x - 0.0).abs() < 0.001);
+        assert!((result[0].y - 0.0).abs() < 0.001);
+        assert!((result[1].x - 60.0).abs() < 0.001);
+        assert!((result[1].y - 0.0).abs() < 0.001);
+        // Second row: item 2 (would exceed width if on first row)
+        assert!((result[2].x - 0.0).abs() < 0.001);
+        assert!((result[2].y - 40.0).abs() < 0.001); // 30 height + 10 gap
+    }
+
+    #[test]
+    fn test_vertical_wrap() {
+        let layout = AutoLayout::vertical()
+            .with_gap(10.0)
+            .with_wrap(true);
+        let container = Bounds::new(0.0, 0.0, 200.0, 80.0);
+        let children = vec![
+            ChildSize { width: Some(30.0), height: Some(30.0), ..Default::default() },
+            ChildSize { width: Some(30.0), height: Some(30.0), ..Default::default() },
+            ChildSize { width: Some(30.0), height: Some(30.0), ..Default::default() },
+        ];
+
+        let result = layout.layout(container, &children);
+
+        assert_eq!(result.len(), 3);
+        // First column: items 0 and 1 (30 + 10 + 30 = 70 < 80)
+        assert!((result[0].x - 0.0).abs() < 0.001);
+        assert!((result[0].y - 0.0).abs() < 0.001);
+        assert!((result[1].x - 0.0).abs() < 0.001);
+        assert!((result[1].y - 40.0).abs() < 0.001);
+        // Second column: item 2
+        assert!((result[2].x - 40.0).abs() < 0.001); // 30 width + 10 gap
+        assert!((result[2].y - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_padding() {
+        let layout = AutoLayout::horizontal()
+            .with_padding(20.0);
+        let container = Bounds::new(0.0, 0.0, 200.0, 100.0);
+        let children = vec![
+            ChildSize { width: Some(50.0), height: Some(50.0), ..Default::default() },
+        ];
+
+        let result = layout.layout(container, &children);
+
+        assert_eq!(result.len(), 1);
+        // Should start at padding offset
+        assert!((result[0].x - 20.0).abs() < 0.001);
+        assert!((result[0].y - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_alignment_end() {
+        let layout = AutoLayout::horizontal()
+            .with_alignment(Alignment::End);
+        let container = Bounds::new(0.0, 0.0, 200.0, 100.0);
+        let children = vec![
+            ChildSize { width: Some(50.0), height: Some(30.0), ..Default::default() },
+        ];
+
+        let result = layout.layout(container, &children);
+
+        assert_eq!(result.len(), 1);
+        // Should be aligned to bottom (100 - 30 = 70)
+        assert!((result[0].y - 70.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_distribution_center() {
+        let layout = AutoLayout::horizontal()
+            .with_distribution(Distribution::Center);
+        let container = Bounds::new(0.0, 0.0, 200.0, 100.0);
+        let children = vec![
+            ChildSize { width: Some(50.0), height: Some(50.0), ..Default::default() },
+        ];
+
+        let result = layout.layout(container, &children);
+
+        assert_eq!(result.len(), 1);
+        // Should be centered: (200 - 50) / 2 = 75
+        assert!((result[0].x - 75.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_distribution_space_around() {
+        let layout = AutoLayout::horizontal()
+            .with_distribution(Distribution::SpaceAround);
+        let container = Bounds::new(0.0, 0.0, 200.0, 100.0);
+        let children = vec![
+            ChildSize { width: Some(50.0), height: Some(50.0), ..Default::default() },
+            ChildSize { width: Some(50.0), height: Some(50.0), ..Default::default() },
+        ];
+
+        let result = layout.layout(container, &children);
+
+        assert_eq!(result.len(), 2);
+        // Total used: 100, extra space: 100
+        // Space around 2 items: 100/2 = 50 per item, 25 on each side
+        // First item: starts at 25
+        assert!((result[0].x - 25.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_distribution_space_evenly() {
+        let layout = AutoLayout::horizontal()
+            .with_distribution(Distribution::SpaceEvenly);
+        let container = Bounds::new(0.0, 0.0, 180.0, 100.0);
+        let children = vec![
+            ChildSize { width: Some(30.0), height: Some(50.0), ..Default::default() },
+            ChildSize { width: Some(30.0), height: Some(50.0), ..Default::default() },
+            ChildSize { width: Some(30.0), height: Some(50.0), ..Default::default() },
+        ];
+
+        let result = layout.layout(container, &children);
+
+        assert_eq!(result.len(), 3);
+        // Total used: 90, extra space: 90
+        // Space evenly with 3 items: 90/(3+1) = 22.5 between each
+        assert!((result[0].x - 22.5).abs() < 0.001);
     }
 }
