@@ -14,13 +14,15 @@ thiserror.workspace = true
 serde_json.workspace = true
 glam.workspace = true
 pdf-writer = { version = "0.12", optional = true }
+zip = { version = "2.2", default-features = false, features = ["deflate"], optional = true }
 
 [dev-dependencies]
 seed-parser = { workspace = true }
 
 [features]
-default = ["svg", "pdf"]
+default = ["svg", "pdf", "3mf"]
 svg = []
 pdf = ["dep:pdf-writer"]
 step = []
 stl = []
+3mf = ["dep:zip"]

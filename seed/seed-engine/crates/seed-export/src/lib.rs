@@ -6,12 +6,16 @@
 //! - PDF (2D print-ready)
 //! - STEP (3D CAD interchange - AP203)
 //! - STL (3D printing)
+//! - 3MF (3D Manufacturing Format)
 
 #[cfg(feature = "svg")]
 pub mod svg;
 
 #[cfg(feature = "pdf")]
 pub mod pdf;
+
+#[cfg(feature = "3mf")]
+pub mod threemf;
 
 pub mod png;
 pub mod step;
@@ -24,6 +28,8 @@ use seed_layout::LayoutTree;
 pub use png::PngOptions;
 pub use stl::{mesh_to_stl, mesh_to_stl_ascii};
 pub use step::{StepOptions, LengthUnit};
+#[cfg(feature = "3mf")]
+pub use threemf::{ThreeMfOptions, ThreeMfUnit};
 
 /// Export a 2D document to SVG.
 #[cfg(feature = "svg")]
@@ -72,6 +78,21 @@ pub fn export_stl(doc: &Document) -> Result<Vec<u8>, ExportError> {
 /// Export a 3D document to STL (ASCII).
 pub fn export_stl_ascii(doc: &Document) -> Result<String, ExportError> {
     stl::export_ascii(doc)
+}
+
+/// Export a 3D document to 3MF format.
+#[cfg(feature = "3mf")]
+pub fn export_3mf(doc: &Document) -> Result<Vec<u8>, ExportError> {
+    threemf::export(doc)
+}
+
+/// Export a 3D document to 3MF with custom options.
+#[cfg(feature = "3mf")]
+pub fn export_3mf_with_options(
+    doc: &Document,
+    options: &ThreeMfOptions,
+) -> Result<Vec<u8>, ExportError> {
+    threemf::export_with_options(doc, options)
 }
 
 #[cfg(test)]
