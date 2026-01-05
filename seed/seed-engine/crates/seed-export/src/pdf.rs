@@ -121,6 +121,9 @@ impl<'a> PdfBuilder<'a> {
         match element {
             Element::Frame(frame) => self.render_frame(frame, node_id),
             Element::Text(text) => self.render_text(text, node_id),
+            Element::Svg(svg) => self.render_svg(svg, node_id),
+            Element::Image(image) => self.render_image(image, node_id),
+            Element::Icon(icon) => self.render_icon(icon, node_id),
             Element::Part(_) => {
                 // 3D parts don't render in PDF
             }
@@ -221,6 +224,296 @@ impl<'a> PdfBuilder<'a> {
         self.content.end_text();
     }
 
+    fn render_svg(&mut self, svg: &seed_core::ast::SvgElement, node_id: LayoutNodeId) {
+        use seed_core::ast::SvgPathCommand;
+
+        let Some(node) = self.layout.get(node_id) else {
+            return;
+        };
+
+        if !node.visible || node.opacity <= 0.0 {
+            return;
+        }
+
+        let bounds = node.absolute_bounds;
+        let offset_x = bounds.x as f32;
+        let offset_y = bounds.y as f32;
+
+        // Get viewBox or use default
+        let (vb_x, vb_y, vb_w, vb_h) = svg.view_box
+            .as_ref()
+            .map(|vb| (vb.min_x as f32, vb.min_y as f32, vb.width as f32, vb.height as f32))
+            .unwrap_or((0.0, 0.0, 24.0, 24.0));
+
+        // Calculate scale factors
+        let scale_x = bounds.width as f32 / vb_w;
+        let scale_y = bounds.height as f32 / vb_h;
+
+        // Render each path
+        for path in &svg.paths {
+            let fill_color = path.fill;
+            let stroke_color = path.stroke;
+            let stroke_width = path.stroke_width.unwrap_or(1.0) as f32 * scale_x.min(scale_y);
+
+            // Track current position for relative commands
+            let mut cur_x = 0.0f32;
+            let mut cur_y = 0.0f32;
+            let mut start_x = 0.0f32;
+            let mut start_y = 0.0f32;
+            let mut path_started = false;
+
+            for cmd in &path.commands {
+                match cmd {
+                    SvgPathCommand::MoveTo { x, y } => {
+                        let px = offset_x + (*x as f32 - vb_x) * scale_x;
+                        let py = offset_y + (*y as f32 - vb_y) * scale_y;
+                        self.content.move_to(px, py);
+                        cur_x = *x as f32;
+                        cur_y = *y as f32;
+                        start_x = cur_x;
+                        start_y = cur_y;
+                        path_started = true;
+                    }
+                    SvgPathCommand::MoveToRel { dx, dy } => {
+                        cur_x += *dx as f32;
+                        cur_y += *dy as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.move_to(px, py);
+                        start_x = cur_x;
+                        start_y = cur_y;
+                        path_started = true;
+                    }
+                    SvgPathCommand::LineTo { x, y } => {
+                        let px = offset_x + (*x as f32 - vb_x) * scale_x;
+                        let py = offset_y + (*y as f32 - vb_y) * scale_y;
+                        self.content.line_to(px, py);
+                        cur_x = *x as f32;
+                        cur_y = *y as f32;
+                    }
+                    SvgPathCommand::LineToRel { dx, dy } => {
+                        cur_x += *dx as f32;
+                        cur_y += *dy as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.line_to(px, py);
+                    }
+                    SvgPathCommand::HorizontalTo { x } => {
+                        cur_x = *x as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.line_to(px, py);
+                    }
+                    SvgPathCommand::HorizontalToRel { dx } => {
+                        cur_x += *dx as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.line_to(px, py);
+                    }
+                    SvgPathCommand::VerticalTo { y } => {
+                        cur_y = *y as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.line_to(px, py);
+                    }
+                    SvgPathCommand::VerticalToRel { dy } => {
+                        cur_y += *dy as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.line_to(px, py);
+                    }
+                    SvgPathCommand::CubicTo { x1, y1, x2, y2, x, y } => {
+                        let px1 = offset_x + (*x1 as f32 - vb_x) * scale_x;
+                        let py1 = offset_y + (*y1 as f32 - vb_y) * scale_y;
+                        let px2 = offset_x + (*x2 as f32 - vb_x) * scale_x;
+                        let py2 = offset_y + (*y2 as f32 - vb_y) * scale_y;
+                        let px = offset_x + (*x as f32 - vb_x) * scale_x;
+                        let py = offset_y + (*y as f32 - vb_y) * scale_y;
+                        self.content.cubic_to(px1, py1, px2, py2, px, py);
+                        cur_x = *x as f32;
+                        cur_y = *y as f32;
+                    }
+                    SvgPathCommand::CubicToRel { dx1, dy1, dx2, dy2, dx, dy } => {
+                        let px1 = offset_x + (cur_x + *dx1 as f32 - vb_x) * scale_x;
+                        let py1 = offset_y + (cur_y + *dy1 as f32 - vb_y) * scale_y;
+                        let px2 = offset_x + (cur_x + *dx2 as f32 - vb_x) * scale_x;
+                        let py2 = offset_y + (cur_y + *dy2 as f32 - vb_y) * scale_y;
+                        cur_x += *dx as f32;
+                        cur_y += *dy as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.cubic_to(px1, py1, px2, py2, px, py);
+                    }
+                    SvgPathCommand::SmoothCubicTo { x2, y2, x, y } => {
+                        // For smooth curves, use current point as first control
+                        let px1 = offset_x + (cur_x - vb_x) * scale_x;
+                        let py1 = offset_y + (cur_y - vb_y) * scale_y;
+                        let px2 = offset_x + (*x2 as f32 - vb_x) * scale_x;
+                        let py2 = offset_y + (*y2 as f32 - vb_y) * scale_y;
+                        let px = offset_x + (*x as f32 - vb_x) * scale_x;
+                        let py = offset_y + (*y as f32 - vb_y) * scale_y;
+                        self.content.cubic_to(px1, py1, px2, py2, px, py);
+                        cur_x = *x as f32;
+                        cur_y = *y as f32;
+                    }
+                    SvgPathCommand::SmoothCubicToRel { dx2, dy2, dx, dy } => {
+                        let px1 = offset_x + (cur_x - vb_x) * scale_x;
+                        let py1 = offset_y + (cur_y - vb_y) * scale_y;
+                        let px2 = offset_x + (cur_x + *dx2 as f32 - vb_x) * scale_x;
+                        let py2 = offset_y + (cur_y + *dy2 as f32 - vb_y) * scale_y;
+                        cur_x += *dx as f32;
+                        cur_y += *dy as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.cubic_to(px1, py1, px2, py2, px, py);
+                    }
+                    SvgPathCommand::QuadTo { x1, y1, x, y } => {
+                        // Convert quadratic to cubic bezier
+                        let qx1 = *x1 as f32;
+                        let qy1 = *y1 as f32;
+                        let qx = *x as f32;
+                        let qy = *y as f32;
+                        // Cubic control points from quadratic
+                        let cx1 = cur_x + 2.0 / 3.0 * (qx1 - cur_x);
+                        let cy1 = cur_y + 2.0 / 3.0 * (qy1 - cur_y);
+                        let cx2 = qx + 2.0 / 3.0 * (qx1 - qx);
+                        let cy2 = qy + 2.0 / 3.0 * (qy1 - qy);
+
+                        let px1 = offset_x + (cx1 - vb_x) * scale_x;
+                        let py1 = offset_y + (cy1 - vb_y) * scale_y;
+                        let px2 = offset_x + (cx2 - vb_x) * scale_x;
+                        let py2 = offset_y + (cy2 - vb_y) * scale_y;
+                        let px = offset_x + (qx - vb_x) * scale_x;
+                        let py = offset_y + (qy - vb_y) * scale_y;
+                        self.content.cubic_to(px1, py1, px2, py2, px, py);
+                        cur_x = qx;
+                        cur_y = qy;
+                    }
+                    SvgPathCommand::QuadToRel { dx1, dy1, dx, dy } => {
+                        let qx1 = cur_x + *dx1 as f32;
+                        let qy1 = cur_y + *dy1 as f32;
+                        let qx = cur_x + *dx as f32;
+                        let qy = cur_y + *dy as f32;
+                        let cx1 = cur_x + 2.0 / 3.0 * (qx1 - cur_x);
+                        let cy1 = cur_y + 2.0 / 3.0 * (qy1 - cur_y);
+                        let cx2 = qx + 2.0 / 3.0 * (qx1 - qx);
+                        let cy2 = qy + 2.0 / 3.0 * (qy1 - qy);
+
+                        let px1 = offset_x + (cx1 - vb_x) * scale_x;
+                        let py1 = offset_y + (cy1 - vb_y) * scale_y;
+                        let px2 = offset_x + (cx2 - vb_x) * scale_x;
+                        let py2 = offset_y + (cy2 - vb_y) * scale_y;
+                        let px = offset_x + (qx - vb_x) * scale_x;
+                        let py = offset_y + (qy - vb_y) * scale_y;
+                        self.content.cubic_to(px1, py1, px2, py2, px, py);
+                        cur_x = qx;
+                        cur_y = qy;
+                    }
+                    SvgPathCommand::SmoothQuadTo { x, y } => {
+                        // Simplified: use line for smooth quad without tracking previous control
+                        let px = offset_x + (*x as f32 - vb_x) * scale_x;
+                        let py = offset_y + (*y as f32 - vb_y) * scale_y;
+                        self.content.line_to(px, py);
+                        cur_x = *x as f32;
+                        cur_y = *y as f32;
+                    }
+                    SvgPathCommand::SmoothQuadToRel { dx, dy } => {
+                        cur_x += *dx as f32;
+                        cur_y += *dy as f32;
+                        let px = offset_x + (cur_x - vb_x) * scale_x;
+                        let py = offset_y + (cur_y - vb_y) * scale_y;
+                        self.content.line_to(px, py);
+                    }
+                    SvgPathCommand::ArcTo { rx, ry, x_rotation, large_arc, sweep, x, y } => {
+                        // Approximate arc with cubic beziers
+                        self.draw_arc(
+                            cur_x, cur_y, *x as f32, *y as f32,
+                            *rx as f32, *ry as f32, *x_rotation as f32,
+                            *large_arc, *sweep,
+                            offset_x, offset_y, vb_x, vb_y, scale_x, scale_y,
+                        );
+                        cur_x = *x as f32;
+                        cur_y = *y as f32;
+                    }
+                    SvgPathCommand::ArcToRel { rx, ry, x_rotation, large_arc, sweep, dx, dy } => {
+                        let end_x = cur_x + *dx as f32;
+                        let end_y = cur_y + *dy as f32;
+                        self.draw_arc(
+                            cur_x, cur_y, end_x, end_y,
+                            *rx as f32, *ry as f32, *x_rotation as f32,
+                            *large_arc, *sweep,
+                            offset_x, offset_y, vb_x, vb_y, scale_x, scale_y,
+                        );
+                        cur_x = end_x;
+                        cur_y = end_y;
+                    }
+                    SvgPathCommand::ClosePath => {
+                        self.content.close_path();
+                        cur_x = start_x;
+                        cur_y = start_y;
+                    }
+                }
+            }
+
+            // Apply fill and/or stroke
+            if path_started {
+                if let Some(color) = fill_color {
+                    self.content.set_fill_rgb(color.r, color.g, color.b);
+                }
+                if let Some(color) = stroke_color {
+                    self.content.set_stroke_rgb(color.r, color.g, color.b);
+                    self.content.set_line_width(stroke_width);
+                }
+
+                match (fill_color, stroke_color) {
+                    (Some(_), Some(_)) => { self.content.fill_nonzero_and_stroke(); }
+                    (Some(_), None) => { self.content.fill_nonzero(); }
+                    (None, Some(_)) => { self.content.stroke(); }
+                    (None, None) => {}
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_arc(
+        &mut self,
+        x1: f32, y1: f32, x2: f32, y2: f32,
+        rx: f32, ry: f32, _x_rotation: f32,
+        _large_arc: bool, _sweep: bool,
+        offset_x: f32, offset_y: f32,
+        vb_x: f32, vb_y: f32,
+        scale_x: f32, scale_y: f32,
+    ) {
+        // Simplified arc: just draw a line for now
+        // Full arc implementation would use endpoint parameterization
+        let px = offset_x + (x2 - vb_x) * scale_x;
+        let py = offset_y + (y2 - vb_y) * scale_y;
+
+        if rx > 0.0 && ry > 0.0 {
+            // For small arcs, approximate with a quadratic bezier
+            let mid_x = (x1 + x2) / 2.0;
+            let mid_y = (y1 + y2) / 2.0;
+            let ctrl_x = mid_x;
+            let ctrl_y = mid_y - ry * 0.5; // Approximation
+
+            // Convert to cubic
+            let cx1 = x1 + 2.0 / 3.0 * (ctrl_x - x1);
+            let cy1 = y1 + 2.0 / 3.0 * (ctrl_y - y1);
+            let cx2 = x2 + 2.0 / 3.0 * (ctrl_x - x2);
+            let cy2 = y2 + 2.0 / 3.0 * (ctrl_y - y2);
+
+            let px1 = offset_x + (cx1 - vb_x) * scale_x;
+            let py1 = offset_y + (cy1 - vb_y) * scale_y;
+            let px2 = offset_x + (cx2 - vb_x) * scale_x;
+            let py2 = offset_y + (cy2 - vb_y) * scale_y;
+
+            self.content.cubic_to(px1, py1, px2, py2, px, py);
+        } else {
+            self.content.line_to(px, py);
+        }
+    }
+
     fn draw_rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: &CornerRadius) {
         // Bezier control point factor for approximating circles
         let k = 0.5522847498;
@@ -282,6 +575,107 @@ impl<'a> PdfBuilder<'a> {
         }
 
         self.content.close_path();
+    }
+
+    fn render_image(&mut self, _image: &seed_core::ast::ImageElement, node_id: LayoutNodeId) {
+        let Some(node) = self.layout.get(node_id) else {
+            return;
+        };
+
+        if !node.visible || node.opacity <= 0.0 {
+            return;
+        }
+
+        let bounds = node.absolute_bounds;
+        let x = bounds.x as f32;
+        let y = bounds.y as f32;
+        let w = bounds.width as f32;
+        let h = bounds.height as f32;
+
+        // For now, render a placeholder rectangle with X pattern
+        // Full image embedding would require base64/stream handling
+        self.content.set_fill_rgb(0.78, 0.78, 0.78);
+        self.content.rect(x, y, w, h);
+        self.content.fill_nonzero();
+
+        // Draw X pattern
+        self.content.set_stroke_rgb(0.6, 0.6, 0.6);
+        self.content.set_line_width(1.0);
+        self.content.move_to(x, y);
+        self.content.line_to(x + w, y + h);
+        self.content.stroke();
+        self.content.move_to(x + w, y);
+        self.content.line_to(x, y + h);
+        self.content.stroke();
+    }
+
+    fn render_icon(&mut self, icon: &seed_core::ast::IconElement, node_id: LayoutNodeId) {
+        let Some(node) = self.layout.get(node_id) else {
+            return;
+        };
+
+        if !node.visible || node.opacity <= 0.0 {
+            return;
+        }
+
+        let bounds = node.absolute_bounds;
+        let x = bounds.x as f32;
+        let y = bounds.y as f32;
+        let w = bounds.width as f32;
+        let h = bounds.height as f32;
+
+        // Get color
+        let color = icon.color.unwrap_or(Color::BLACK);
+
+        match &icon.icon {
+            seed_core::ast::IconSource::Svg(paths) => {
+                // Calculate scale to fit icon in bounds
+                let scale_x = w / 24.0;
+                let scale_y = h / 24.0;
+
+                for path in paths {
+                    let fill_color = path.fill.unwrap_or(color);
+                    self.content.set_fill_rgb(fill_color.r, fill_color.g, fill_color.b);
+
+                    // Render SVG path commands (simplified)
+                    for cmd in &path.commands {
+                        use seed_core::ast::SvgPathCommand;
+                        match cmd {
+                            SvgPathCommand::MoveTo { x: px, y: py } => {
+                                self.content.move_to(x + *px as f32 * scale_x, y + *py as f32 * scale_y);
+                            }
+                            SvgPathCommand::LineTo { x: px, y: py } => {
+                                self.content.line_to(x + *px as f32 * scale_x, y + *py as f32 * scale_y);
+                            }
+                            SvgPathCommand::ClosePath => {
+                                self.content.close_path();
+                            }
+                            // For other commands, skip (would need full path rendering)
+                            _ => {}
+                        }
+                    }
+
+                    self.content.fill_nonzero();
+                }
+            }
+            _ => {
+                // Named icons or token refs: render placeholder circle
+                let cx = x + w / 2.0;
+                let cy = y + h / 2.0;
+                let r = w.min(h) / 2.0;
+
+                self.content.set_fill_rgb(color.r, color.g, color.b);
+                // Approximate circle with bezier curves
+                let k = 0.5522847498;
+                self.content.move_to(cx + r, cy);
+                self.content.cubic_to(cx + r, cy + r * k, cx + r * k, cy + r, cx, cy + r);
+                self.content.cubic_to(cx - r * k, cy + r, cx - r, cy + r * k, cx - r, cy);
+                self.content.cubic_to(cx - r, cy - r * k, cx - r * k, cy - r, cx, cy - r);
+                self.content.cubic_to(cx + r * k, cy - r, cx + r, cy - r * k, cx + r, cy);
+                self.content.close_path();
+                self.content.fill_nonzero();
+            }
+        }
     }
 }
 

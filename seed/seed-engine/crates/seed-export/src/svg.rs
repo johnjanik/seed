@@ -248,6 +248,9 @@ impl<'a> SvgBuilder<'a> {
         match element {
             Element::Frame(frame) => self.export_frame(frame, node_id),
             Element::Text(text) => self.export_text(text, node_id),
+            Element::Svg(svg) => self.export_svg(svg, node_id),
+            Element::Image(image) => self.export_image(image, node_id),
+            Element::Icon(icon) => self.export_icon(icon, node_id),
             Element::Part(_) => Ok(()), // 3D parts don't render in 2D SVG
             Element::Component(_) => Ok(()), // Components should be expanded
             Element::Slot(_) => Ok(()), // Slots should be expanded
@@ -400,6 +403,308 @@ impl<'a> SvgBuilder<'a> {
             font_size,
             font_family,
             content
+        ));
+
+        Ok(())
+    }
+
+    fn export_svg(&mut self, svg: &seed_core::ast::SvgElement, node_id: Option<LayoutNodeId>) -> Result<(), ExportError> {
+        let (x, y, width, height) = if let Some(id) = node_id {
+            if let Some(node) = self.layout.get(id) {
+                let b = node.absolute_bounds;
+                (b.x, b.y, b.width, b.height)
+            } else {
+                (0.0, 0.0, 24.0, 24.0)
+            }
+        } else {
+            (0.0, 0.0, 24.0, 24.0)
+        };
+
+        // Get fill and stroke from properties
+        let fill_value = get_fill(&svg.properties, &self.gradients);
+        let stroke_color = get_color_property(&svg.properties, "stroke");
+        let stroke_width = get_number_property(&svg.properties, "stroke-width").unwrap_or(1.0);
+
+        // Get viewBox
+        let view_box = svg.view_box.unwrap_or_default();
+
+        // Calculate transform from viewBox to bounds
+        let scale_x = width / view_box.width;
+        let scale_y = height / view_box.height;
+
+        // Start SVG group with transform
+        self.write_indent();
+        self.svg.push_str(&format!(
+            "<g transform=\"translate({}, {}) scale({}, {})\">\n",
+            x - view_box.min_x * scale_x,
+            y - view_box.min_y * scale_y,
+            scale_x,
+            scale_y
+        ));
+        self.indent += 1;
+
+        // Export each path
+        for path in &svg.paths {
+            self.export_svg_path(path, &fill_value, stroke_color.as_ref(), stroke_width)?;
+        }
+
+        // Close group
+        self.indent -= 1;
+        self.write_indent();
+        self.svg.push_str("</g>\n");
+
+        Ok(())
+    }
+
+    fn export_image(&mut self, image: &seed_core::ast::ImageElement, node_id: Option<LayoutNodeId>) -> Result<(), ExportError> {
+        let (x, y, width, height) = if let Some(id) = node_id {
+            if let Some(node) = self.layout.get(id) {
+                let b = node.absolute_bounds;
+                (b.x, b.y, b.width, b.height)
+            } else {
+                (0.0, 0.0, 100.0, 100.0)
+            }
+        } else {
+            (0.0, 0.0, 100.0, 100.0)
+        };
+
+        // Get source URL if available
+        let href = match &image.source {
+            seed_core::ast::ImageSource::Url(url) => Some(url.clone()),
+            seed_core::ast::ImageSource::File(path) => Some(path.clone()),
+            seed_core::ast::ImageSource::Data { mime_type, data } => {
+                Some(format!("data:{};base64,{}", mime_type, data))
+            }
+            seed_core::ast::ImageSource::TokenRef(_) => None, // Token refs should be resolved
+        };
+
+        if let Some(url) = href {
+            // Render as actual image element
+            self.write_indent();
+            self.svg.push_str(&format!(
+                "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" href=\"{}\"",
+                x, y, width, height,
+                escape_xml(&url)
+            ));
+
+            // Add preserveAspectRatio based on fit mode
+            let aspect_ratio = match image.fit {
+                seed_core::ast::ImageFit::Cover => "xMidYMid slice",
+                seed_core::ast::ImageFit::Contain => "xMidYMid meet",
+                seed_core::ast::ImageFit::Fill => "none",
+                seed_core::ast::ImageFit::None => "xMinYMin meet",
+                seed_core::ast::ImageFit::ScaleDown => "xMidYMid meet",
+            };
+            self.svg.push_str(&format!(" preserveAspectRatio=\"{}\"", aspect_ratio));
+            self.svg.push_str(" />\n");
+        } else {
+            // Render placeholder (gray rect with X)
+            self.write_indent();
+            self.svg.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#c8c8c8\" stroke=\"#969696\" stroke-width=\"1\" />\n",
+                x, y, width, height
+            ));
+            // Diagonal lines for X pattern
+            self.write_indent();
+            self.svg.push_str(&format!(
+                "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#969696\" stroke-width=\"1\" />\n",
+                x, y, x + width, y + height
+            ));
+            self.write_indent();
+            self.svg.push_str(&format!(
+                "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#969696\" stroke-width=\"1\" />\n",
+                x + width, y, x, y + height
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn export_icon(&mut self, icon: &seed_core::ast::IconElement, node_id: Option<LayoutNodeId>) -> Result<(), ExportError> {
+        let (x, y, width, height) = if let Some(id) = node_id {
+            if let Some(node) = self.layout.get(id) {
+                let b = node.absolute_bounds;
+                (b.x, b.y, b.width, b.height)
+            } else {
+                (0.0, 0.0, 24.0, 24.0)
+            }
+        } else {
+            (0.0, 0.0, 24.0, 24.0)
+        };
+
+        // Get color if specified
+        let color = icon.color.unwrap_or(Color::BLACK);
+        let color_str = color_to_svg(&color);
+
+        match &icon.icon {
+            seed_core::ast::IconSource::Svg(paths) => {
+                // Render inline SVG paths
+                self.write_indent();
+                self.svg.push_str(&format!(
+                    "<g transform=\"translate({}, {}) scale({}, {})\">\n",
+                    x, y, width / 24.0, height / 24.0
+                ));
+                self.indent += 1;
+
+                for path in paths {
+                    let fill_value = FillValue::Color(path.fill.unwrap_or(color));
+                    let stroke = path.stroke.as_ref();
+                    let stroke_width = path.stroke_width.unwrap_or(1.0);
+                    self.export_svg_path(path, &fill_value, stroke, stroke_width)?;
+                }
+
+                self.indent -= 1;
+                self.write_indent();
+                self.svg.push_str("</g>\n");
+            }
+            seed_core::ast::IconSource::Named { library, name } => {
+                // Render placeholder circle for named icons
+                let label = if let Some(lib) = library {
+                    format!("{}:{}", lib, name)
+                } else {
+                    name.clone()
+                };
+
+                let cx = x + width / 2.0;
+                let cy = y + height / 2.0;
+                let r = width.min(height) / 2.0;
+
+                self.write_indent();
+                self.svg.push_str(&format!(
+                    "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\" />\n",
+                    cx, cy, r, color_str
+                ));
+                // Add a comment with the icon name for debugging
+                self.write_indent();
+                self.svg.push_str(&format!("<!-- Icon: {} -->\n", escape_xml(&label)));
+            }
+            seed_core::ast::IconSource::TokenRef(_) => {
+                // Token refs should be resolved before export
+                // Render placeholder
+                let cx = x + width / 2.0;
+                let cy = y + height / 2.0;
+                let r = width.min(height) / 2.0;
+
+                self.write_indent();
+                self.svg.push_str(&format!(
+                    "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"#969696\" />\n",
+                    cx, cy, r
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn export_svg_path(
+        &mut self,
+        path: &seed_core::ast::SvgPath,
+        default_fill: &FillValue,
+        default_stroke: Option<&Color>,
+        default_stroke_width: f64,
+    ) -> Result<(), ExportError> {
+        use seed_core::ast::SvgPathCommand;
+
+        // Build SVG path data string
+        let mut d = String::new();
+        for cmd in &path.commands {
+            match cmd {
+                SvgPathCommand::MoveTo { x, y } => {
+                    d.push_str(&format!("M{},{} ", x, y));
+                }
+                SvgPathCommand::MoveToRel { dx, dy } => {
+                    d.push_str(&format!("m{},{} ", dx, dy));
+                }
+                SvgPathCommand::LineTo { x, y } => {
+                    d.push_str(&format!("L{},{} ", x, y));
+                }
+                SvgPathCommand::LineToRel { dx, dy } => {
+                    d.push_str(&format!("l{},{} ", dx, dy));
+                }
+                SvgPathCommand::HorizontalTo { x } => {
+                    d.push_str(&format!("H{} ", x));
+                }
+                SvgPathCommand::HorizontalToRel { dx } => {
+                    d.push_str(&format!("h{} ", dx));
+                }
+                SvgPathCommand::VerticalTo { y } => {
+                    d.push_str(&format!("V{} ", y));
+                }
+                SvgPathCommand::VerticalToRel { dy } => {
+                    d.push_str(&format!("v{} ", dy));
+                }
+                SvgPathCommand::CubicTo { x1, y1, x2, y2, x, y } => {
+                    d.push_str(&format!("C{},{} {},{} {},{} ", x1, y1, x2, y2, x, y));
+                }
+                SvgPathCommand::CubicToRel { dx1, dy1, dx2, dy2, dx, dy } => {
+                    d.push_str(&format!("c{},{} {},{} {},{} ", dx1, dy1, dx2, dy2, dx, dy));
+                }
+                SvgPathCommand::SmoothCubicTo { x2, y2, x, y } => {
+                    d.push_str(&format!("S{},{} {},{} ", x2, y2, x, y));
+                }
+                SvgPathCommand::SmoothCubicToRel { dx2, dy2, dx, dy } => {
+                    d.push_str(&format!("s{},{} {},{} ", dx2, dy2, dx, dy));
+                }
+                SvgPathCommand::QuadTo { x1, y1, x, y } => {
+                    d.push_str(&format!("Q{},{} {},{} ", x1, y1, x, y));
+                }
+                SvgPathCommand::QuadToRel { dx1, dy1, dx, dy } => {
+                    d.push_str(&format!("q{},{} {},{} ", dx1, dy1, dx, dy));
+                }
+                SvgPathCommand::SmoothQuadTo { x, y } => {
+                    d.push_str(&format!("T{},{} ", x, y));
+                }
+                SvgPathCommand::SmoothQuadToRel { dx, dy } => {
+                    d.push_str(&format!("t{},{} ", dx, dy));
+                }
+                SvgPathCommand::ArcTo { rx, ry, x_rotation, large_arc, sweep, x, y } => {
+                    d.push_str(&format!("A{},{} {} {} {} {},{} ",
+                        rx, ry, x_rotation,
+                        if *large_arc { 1 } else { 0 },
+                        if *sweep { 1 } else { 0 },
+                        x, y));
+                }
+                SvgPathCommand::ArcToRel { rx, ry, x_rotation, large_arc, sweep, dx, dy } => {
+                    d.push_str(&format!("a{},{} {} {} {} {},{} ",
+                        rx, ry, x_rotation,
+                        if *large_arc { 1 } else { 0 },
+                        if *sweep { 1 } else { 0 },
+                        dx, dy));
+                }
+                SvgPathCommand::ClosePath => {
+                    d.push_str("Z ");
+                }
+            }
+        }
+
+        // Determine fill
+        let fill_str = match path.fill {
+            Some(color) => color_to_svg(&color),
+            None => match default_fill {
+                FillValue::Color(c) => color_to_svg(c),
+                FillValue::Gradient(id) => format!("url(#{})", id),
+                FillValue::None => "none".to_string(),
+            },
+        };
+
+        // Determine stroke
+        let stroke_str = match path.stroke {
+            Some(color) => color_to_svg(&color),
+            None => match default_stroke {
+                Some(c) => color_to_svg(c),
+                None => "none".to_string(),
+            },
+        };
+
+        let stroke_width = path.stroke_width.unwrap_or(default_stroke_width);
+
+        self.write_indent();
+        self.svg.push_str(&format!(
+            "<path d=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+            d.trim(),
+            fill_str,
+            stroke_str,
+            stroke_width
         ));
 
         Ok(())

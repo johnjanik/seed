@@ -74,6 +74,8 @@ pub enum Element {
     Frame(FrameElement),
     Text(TextElement),
     Svg(SvgElement),
+    Image(ImageElement),
+    Icon(IconElement),
     Part(PartElement),
     Component(ComponentElement),
     Slot(SlotElement),
@@ -228,6 +230,83 @@ pub enum SvgPathCommand {
     },
     /// Z/z - Close path
     ClosePath,
+}
+
+/// An Image element for raster images.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ImageElement {
+    pub name: Option<Identifier>,
+    /// Image source (URL, file path, or embedded data)
+    pub source: ImageSource,
+    /// How the image should fit within its bounds
+    pub fit: ImageFit,
+    /// Alt text for accessibility
+    pub alt: Option<String>,
+    /// Properties like width, height, opacity
+    pub properties: Vec<Property>,
+    pub constraints: Vec<Constraint>,
+    pub span: Span,
+}
+
+/// Image source types.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ImageSource {
+    /// URL (http/https)
+    Url(String),
+    /// File path (relative or absolute)
+    File(String),
+    /// Base64-encoded image data with MIME type
+    Data { mime_type: String, data: String },
+    /// Token reference to an image asset
+    TokenRef(TokenPath),
+}
+
+/// How an image should fit within its bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ImageFit {
+    /// Scale to fill, cropping if necessary (CSS: object-fit: cover)
+    #[default]
+    Cover,
+    /// Scale to fit entirely within bounds (CSS: object-fit: contain)
+    Contain,
+    /// Stretch to fill bounds exactly (CSS: object-fit: fill)
+    Fill,
+    /// No scaling, display at natural size (CSS: object-fit: none)
+    None,
+    /// Scale down only if larger than bounds
+    ScaleDown,
+}
+
+/// An Icon element for vector icons.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct IconElement {
+    pub name: Option<Identifier>,
+    /// Icon identifier or source
+    pub icon: IconSource,
+    /// Icon size (width and height are equal)
+    pub size: Option<Length>,
+    /// Icon color (overrides the icon's native colors)
+    pub color: Option<crate::types::Color>,
+    /// Properties like opacity, transform
+    pub properties: Vec<Property>,
+    pub constraints: Vec<Constraint>,
+    pub span: Span,
+}
+
+/// Icon source types.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum IconSource {
+    /// Named icon from a library (e.g., "lucide:home", "material:settings")
+    Named { library: Option<String>, name: String },
+    /// Inline SVG path data
+    Svg(Vec<SvgPath>),
+    /// Token reference to an icon
+    TokenRef(TokenPath),
 }
 
 /// A Part element (3D geometry).

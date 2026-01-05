@@ -81,6 +81,115 @@
             overflow: auto;
         }
         #canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .preview-tabs {
+            display: flex;
+            gap: 0;
+            background: #1e1e3a;
+        }
+        .preview-tab {
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+            color: #666;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+        }
+        .preview-tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        .preview-tab:hover { color: #888; }
+        .comparison-container {
+            flex: 1;
+            display: flex;
+            align-items: stretch;
+            overflow: hidden;
+        }
+        .comparison-pane {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            background: #fff;
+            overflow: auto;
+        }
+        .comparison-pane.reference { background: #f5f5f5; border-right: 1px solid #ddd; }
+        .pane-label {
+            font-size: 0.625rem;
+            text-transform: uppercase;
+            color: #999;
+            margin-bottom: 8px;
+        }
+        #reference-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        .reference-placeholder {
+            color: #999;
+            font-size: 0.875rem;
+            text-align: center;
+            padding: 20px;
+        }
+        .comparison-slider {
+            display: none;
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #fff;
+        }
+        .comparison-slider.active { display: flex; }
+        .slider-image {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .slider-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 50%;
+            height: 100%;
+            overflow: hidden;
+            border-right: 2px solid #667eea;
+        }
+        .slider-handle {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            width: 4px;
+            height: 100%;
+            background: #667eea;
+            cursor: ew-resize;
+            transform: translateX(-50%);
+        }
+        .slider-handle::before {
+            content: '◀ ▶';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #667eea;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.625rem;
+            white-space: nowrap;
+        }
+        .diff-overlay {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        .diff-overlay.active { display: block; }
+        .opacity-slider { width: 100px; }
         .toolbar {
             grid-column: 1 / -1;
             display: flex;
@@ -148,18 +257,55 @@
         </div>
         <div class="panel">
             <div class="panel-header">Preview</div>
-            <div class="preview-container">
+            <div class="preview-tabs">
+                <button class="preview-tab active" data-view="render">Render</button>
+                <button class="preview-tab" data-view="compare">Side-by-Side</button>
+                <button class="preview-tab" data-view="slider">Slider</button>
+                <button class="preview-tab" data-view="diff">Diff</button>
+            </div>
+            <!-- Render only view -->
+            <div class="preview-container" id="view-render">
                 <canvas id="canvas"></canvas>
+            </div>
+            <!-- Side-by-side comparison view -->
+            <div class="comparison-container" id="view-compare" style="display:none;">
+                <div class="comparison-pane reference">
+                    <div class="pane-label">Reference</div>
+                    <div id="reference-placeholder" class="reference-placeholder">
+                        Click "Import Reference" to load a PNG
+                    </div>
+                    <img id="reference-img" style="display:none;">
+                </div>
+                <div class="comparison-pane">
+                    <div class="pane-label">Rendered</div>
+                    <canvas id="canvas-compare"></canvas>
+                </div>
+            </div>
+            <!-- Slider comparison view -->
+            <div class="comparison-slider" id="view-slider">
+                <img id="slider-ref" class="slider-image">
+                <div class="slider-overlay" id="slider-overlay">
+                    <canvas id="canvas-slider" class="slider-image"></canvas>
+                </div>
+                <div class="slider-handle" id="slider-handle"></div>
+            </div>
+            <!-- Diff view -->
+            <div class="preview-container" id="view-diff" style="display:none;">
+                <canvas id="canvas-diff"></canvas>
             </div>
             <div id="error-container" class="error-message"></div>
             <div class="info-bar">
                 <span id="info">-</span>
+                <span id="diff-info" style="display:none;">Difference: <span id="diff-percent">-</span>%</span>
             </div>
         </div>
         <div class="toolbar">
             <button class="btn-primary" id="btn-render">Render</button>
             <button class="btn-secondary" id="btn-svg">Export SVG</button>
             <button class="btn-secondary" id="btn-png">Export PNG</button>
+            <button class="btn-secondary" id="btn-import">Import Reference</button>
+            <button class="btn-secondary" id="btn-clear-ref" style="display:none;">Clear Reference</button>
+            <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
             <div class="examples">
                 <select id="examples">
                     <option value="">Load Example...</option>
@@ -175,13 +321,29 @@
         const status = document.getElementById('status');
         const editor = document.getElementById('editor');
         const canvas = document.getElementById('canvas');
+        const canvasCompare = document.getElementById('canvas-compare');
+        const canvasSlider = document.getElementById('canvas-slider');
+        const canvasDiff = document.getElementById('canvas-diff');
         const errorContainer = document.getElementById('error-container');
         const info = document.getElementById('info');
+        const diffInfo = document.getElementById('diff-info');
+        const diffPercent = document.getElementById('diff-percent');
+        const fileInput = document.getElementById('file-input');
+        const referenceImg = document.getElementById('reference-img');
+        const referencePlaceholder = document.getElementById('reference-placeholder');
+        const sliderRef = document.getElementById('slider-ref');
+        const sliderOverlay = document.getElementById('slider-overlay');
+        const sliderHandle = document.getElementById('slider-handle');
+        const btnClearRef = document.getElementById('btn-clear-ref');
 
         status.textContent = 'JS loaded...';
         console.log('Step 1: JS loaded');
 
         let engine = null;
+        let wasmModule = null;
+        let referenceDataUrl = null;
+        let currentView = 'render';
+        let lastRenderedDataUrl = null;
 
         const EXAMPLES = {
             simple: `Frame:
@@ -215,6 +377,286 @@
   fill: linear-gradient(135deg, #667eea 0%, #764ba2 100%)
   corner-radius: 16px`
         };
+
+        // View tab handling
+        document.querySelectorAll('.preview-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.preview-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                currentView = tab.dataset.view;
+                updateView();
+            });
+        });
+
+        function updateView() {
+            document.getElementById('view-render').style.display = currentView === 'render' ? 'flex' : 'none';
+            document.getElementById('view-compare').style.display = currentView === 'compare' ? 'flex' : 'none';
+            document.getElementById('view-slider').style.display = currentView === 'slider' ? 'flex' : 'none';
+            document.getElementById('view-diff').style.display = currentView === 'diff' ? 'flex' : 'none';
+            diffInfo.style.display = currentView === 'diff' && referenceDataUrl ? 'inline' : 'none';
+
+            if (currentView !== 'render' && lastRenderedDataUrl) {
+                updateComparisonViews();
+            }
+        }
+
+        function updateComparisonViews() {
+            if (!lastRenderedDataUrl) return;
+
+            // Update side-by-side comparison canvas
+            const img = new Image();
+            img.onload = () => {
+                canvasCompare.width = img.width;
+                canvasCompare.height = img.height;
+                canvasCompare.getContext('2d').drawImage(img, 0, 0);
+
+                // Update slider canvas
+                canvasSlider.width = img.width;
+                canvasSlider.height = img.height;
+                canvasSlider.getContext('2d').drawImage(img, 0, 0);
+
+                // Update diff if reference exists
+                if (referenceDataUrl && currentView === 'diff') {
+                    computeDiff();
+                }
+            };
+            img.src = lastRenderedDataUrl;
+        }
+
+        function computeDiff() {
+            if (!referenceDataUrl || !lastRenderedDataUrl) return;
+
+            const refImg = new Image();
+            const renderedImg = new Image();
+            let loadedCount = 0;
+
+            const onBothLoaded = () => {
+                loadedCount++;
+                if (loadedCount < 2) return;
+
+                const width = Math.max(refImg.width, renderedImg.width);
+                const height = Math.max(refImg.height, renderedImg.height);
+
+                canvasDiff.width = width;
+                canvasDiff.height = height;
+                const ctx = canvasDiff.getContext('2d');
+
+                // Draw reference
+                const refCanvas = document.createElement('canvas');
+                refCanvas.width = width;
+                refCanvas.height = height;
+                const refCtx = refCanvas.getContext('2d');
+                refCtx.fillStyle = '#fff';
+                refCtx.fillRect(0, 0, width, height);
+                refCtx.drawImage(refImg, 0, 0);
+                const refData = refCtx.getImageData(0, 0, width, height);
+
+                // Draw rendered
+                const renderedCanvas = document.createElement('canvas');
+                renderedCanvas.width = width;
+                renderedCanvas.height = height;
+                const renderedCtx = renderedCanvas.getContext('2d');
+                renderedCtx.fillStyle = '#fff';
+                renderedCtx.fillRect(0, 0, width, height);
+                renderedCtx.drawImage(renderedImg, 0, 0);
+                const renderedData = renderedCtx.getImageData(0, 0, width, height);
+
+                // Compute difference
+                const diffData = ctx.createImageData(width, height);
+                let diffPixels = 0;
+                const totalPixels = width * height;
+
+                for (let i = 0; i < refData.data.length; i += 4) {
+                    const dr = Math.abs(refData.data[i] - renderedData.data[i]);
+                    const dg = Math.abs(refData.data[i + 1] - renderedData.data[i + 1]);
+                    const db = Math.abs(refData.data[i + 2] - renderedData.data[i + 2]);
+                    const diff = (dr + dg + db) / 3;
+
+                    if (diff > 5) { // Threshold for "different"
+                        diffPixels++;
+                        // Highlight differences in red
+                        diffData.data[i] = 255;
+                        diffData.data[i + 1] = 0;
+                        diffData.data[i + 2] = 0;
+                        diffData.data[i + 3] = Math.min(255, diff * 3);
+                    } else {
+                        // Show original (dimmed)
+                        diffData.data[i] = renderedData.data[i];
+                        diffData.data[i + 1] = renderedData.data[i + 1];
+                        diffData.data[i + 2] = renderedData.data[i + 2];
+                        diffData.data[i + 3] = 128;
+                    }
+                }
+
+                ctx.putImageData(diffData, 0, 0);
+
+                const diffPercentage = ((diffPixels / totalPixels) * 100).toFixed(2);
+                diffPercent.textContent = diffPercentage;
+                diffInfo.style.display = 'inline';
+            };
+
+            refImg.onload = onBothLoaded;
+            renderedImg.onload = onBothLoaded;
+            refImg.src = referenceDataUrl;
+            renderedImg.src = lastRenderedDataUrl;
+        }
+
+        // Import reference button - imports image and generates starter code
+        document.getElementById('btn-import').addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            try {
+                // Read file as both DataURL (for display) and ArrayBuffer (for WASM)
+                const [dataUrl, arrayBuffer] = await Promise.all([
+                    readFileAsDataUrl(file),
+                    file.arrayBuffer()
+                ]);
+
+                referenceDataUrl = dataUrl;
+                referenceImg.src = referenceDataUrl;
+                referenceImg.style.display = 'block';
+                referencePlaceholder.style.display = 'none';
+                sliderRef.src = referenceDataUrl;
+                btnClearRef.style.display = 'inline-block';
+
+                // Analyze image using Rust WASM analyzer
+                if (wasmModule) {
+                    status.textContent = 'Analyzing image...';
+                    const pngBytes = new Uint8Array(arrayBuffer);
+                    try {
+                        const seedCode = wasmModule.analyzePng(pngBytes);
+                        editor.value = seedCode;
+                        status.textContent = 'Ready';
+                        status.classList.remove('error');
+                        status.classList.add('ready');
+                    } catch (analyzeError) {
+                        console.error('Analysis error:', analyzeError);
+                        // Fall back to simple JS-based generation
+                        const img = new Image();
+                        img.onload = () => {
+                            editor.value = generateStarterCode(img);
+                            doRender();
+                            document.querySelector('[data-view="compare"]').click();
+                        };
+                        img.src = dataUrl;
+                        return;
+                    }
+                }
+
+                // Auto-render to show comparison
+                doRender();
+
+                // Switch to side-by-side view for comparison
+                document.querySelector('[data-view="compare"]').click();
+            } catch (err) {
+                console.error('File read error:', err);
+                alert('Failed to read file: ' + err.message);
+            }
+            fileInput.value = ''; // Reset for re-selecting same file
+        });
+
+        function readFileAsDataUrl(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Generate starter Seed code from an image
+        function generateStarterCode(img) {
+            const origWidth = img.width;
+            const origHeight = img.height;
+
+            // Limit render size to prevent browser hang
+            const MAX_SIZE = 400;
+            const scale = Math.min(1, MAX_SIZE / Math.max(origWidth, origHeight));
+            const width = Math.round(origWidth * scale);
+            const height = Math.round(origHeight * scale);
+
+            // Create a smaller canvas for sampling
+            const sampleCanvas = document.createElement('canvas');
+            const sampleSize = Math.min(100, Math.min(origWidth, origHeight));
+            const sampleScale = sampleSize / Math.max(origWidth, origHeight);
+            sampleCanvas.width = Math.round(origWidth * sampleScale);
+            sampleCanvas.height = Math.round(origHeight * sampleScale);
+            const ctx = sampleCanvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, sampleCanvas.width, sampleCanvas.height);
+
+            // Sample colors from the scaled-down image
+            const colors = sampleImageColors(ctx, sampleCanvas.width, sampleCanvas.height, scale / sampleScale);
+
+            // Generate simple Seed code template
+            let code = `Frame:\n`;
+            code += `  width: ${width}px\n`;
+            code += `  height: ${height}px\n`;
+            code += `  fill: ${colors.background}\n`;
+
+            return code;
+        }
+
+        // Sample colors from image
+        function sampleImageColors(ctx, width, height, outputScale) {
+            // Get all pixel data at once (more efficient)
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+
+            // Get background color from corners
+            const getPixel = (x, y) => {
+                const i = (y * width + x) * 4;
+                return { r: data[i], g: data[i+1], b: data[i+2] };
+            };
+
+            const corners = [
+                getPixel(0, 0),
+                getPixel(width-1, 0),
+                getPixel(0, height-1),
+                getPixel(width-1, height-1)
+            ];
+
+            let r = 0, g = 0, b = 0;
+            corners.forEach(c => { r += c.r; g += c.g; b += c.b; });
+            const bgColor = { r: Math.round(r/4), g: Math.round(g/4), b: Math.round(b/4) };
+
+            return {
+                background: rgbToHex(bgColor),
+                regions: []
+            };
+        }
+
+        function rgbToHex(c) {
+            return '#' + [c.r, c.g, c.b].map(x => x.toString(16).padStart(2, '0')).join('');
+        }
+
+        // Clear reference button
+        btnClearRef.addEventListener('click', () => {
+            referenceDataUrl = null;
+            referenceImg.src = '';
+            referenceImg.style.display = 'none';
+            referencePlaceholder.style.display = 'block';
+            sliderRef.src = '';
+            btnClearRef.style.display = 'none';
+            diffInfo.style.display = 'none';
+        });
+
+        // Slider functionality
+        let isDragging = false;
+        sliderHandle.addEventListener('mousedown', () => { isDragging = true; });
+        document.addEventListener('mouseup', () => { isDragging = false; });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const rect = document.getElementById('view-slider').getBoundingClientRect();
+            const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+            const percent = (x / rect.width) * 100;
+            sliderOverlay.style.width = percent + '%';
+            sliderHandle.style.left = percent + '%';
+        });
 
         // Event listeners
         document.getElementById('btn-render').addEventListener('click', doRender);
@@ -273,19 +715,8 @@
                 console.log('Layout done, exporting PNG...');
                 const pngData = engine.exportPng();
                 console.log('PNG exported, size:', pngData.length);
-                console.log('PNG type:', typeof pngData, pngData.constructor.name);
-                console.log('PNG first 20 bytes:', Array.from(pngData.slice(0, 20)));
-                // Verify PNG signature
-                const sig = [137, 80, 78, 71, 13, 10, 26, 10];
-                const match = sig.every((b, i) => pngData[i] === b);
-                console.log('PNG signature valid:', match);
 
-                // Try creating blob and data URL
-                const blob = new Blob([pngData], { type: 'image/png' });
-                console.log('Blob size:', blob.size);
-
-                // Also try base64 data URL as alternative
-                // Use chunked conversion to avoid stack overflow with large arrays
+                // Create data URL
                 let binary = '';
                 const chunkSize = 8192;
                 for (let i = 0; i < pngData.length; i += chunkSize) {
@@ -293,11 +724,10 @@
                     binary += String.fromCharCode.apply(null, chunk);
                 }
                 const base64 = btoa(binary);
-                const dataUrl = 'data:image/png;base64,' + base64;
-                console.log('Data URL length:', dataUrl.length);
+                lastRenderedDataUrl = 'data:image/png;base64,' + base64;
 
+                const blob = new Blob([pngData], { type: 'image/png' });
                 const url = URL.createObjectURL(blob);
-                console.log('Blob URL:', url);
 
                 const img = new Image();
                 img.onload = () => {
@@ -307,30 +737,27 @@
                     canvas.getContext('2d').drawImage(img, 0, 0);
                     URL.revokeObjectURL(url);
                     info.textContent = img.width + ' x ' + img.height;
+
+                    // Update comparison views if not in render-only mode
+                    if (currentView !== 'render') {
+                        updateComparisonViews();
+                    }
                 };
                 img.onerror = (e) => {
-                    console.error('Image load error from blob URL:', e);
-                    console.log('Trying data URL instead...');
+                    console.error('Image load error:', e);
                     // Try data URL as fallback
                     const img2 = new Image();
                     img2.onload = () => {
-                        console.log('Image loaded from data URL:', img2.width, 'x', img2.height);
                         canvas.width = img2.width;
                         canvas.height = img2.height;
                         canvas.getContext('2d').drawImage(img2, 0, 0);
                         info.textContent = img2.width + ' x ' + img2.height;
+                        if (currentView !== 'render') {
+                            updateComparisonViews();
+                        }
                     };
-                    img2.onerror = (e2) => {
-                        console.error('Image load error from data URL too:', e2);
-                        // Download for inspection
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = 'debug.png';
-                        a.click();
-                    };
-                    img2.src = dataUrl;
+                    img2.src = lastRenderedDataUrl;
                 };
-                console.log('Setting img.src...');
                 img.src = url;
             } catch (e) {
                 errorContainer.textContent = e.message;
@@ -357,6 +784,7 @@
             await module.default();
             console.log('Step 5: WASM initialized');
 
+            wasmModule = module;
             engine = new module.SeedEngine();
             const version = module.getVersion();
             console.log('Step 6: Ready, version:', version);

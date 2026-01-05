@@ -87,6 +87,16 @@ impl<'a> Parser<'a> {
             return self.parse_svg_element().map(|s| Some(Element::Svg(s)));
         }
 
+        // Try to parse as Image
+        if content.starts_with("Image ") || content == "Image:" {
+            return self.parse_image_element().map(|i| Some(Element::Image(i)));
+        }
+
+        // Try to parse as Icon
+        if content.starts_with("Icon ") || content == "Icon:" {
+            return self.parse_icon_element().map(|i| Some(Element::Icon(i)));
+        }
+
         Ok(None)
     }
 
@@ -295,6 +305,126 @@ impl<'a> Parser<'a> {
             view_box,
             properties: other_properties,
             constraints,
+            span: Span {
+                line: line_num as u32,
+                ..Default::default()
+            },
+        })
+    }
+
+    /// Parse an Image element.
+    fn parse_image_element(&mut self) -> Result<ImageElement, ParseError> {
+        let line = self.current().ok_or(ParseError::UnexpectedEof)?;
+        let base_indent = line.indent;
+        let content = line.content;
+        let line_num = line.line_number;
+
+        let name = parse_element_header(content, "Image")
+            .map_err(|_| ParseError::UnexpectedToken {
+                found: content.to_string(),
+                expected: "Image element".to_string(),
+                line: line_num as u32,
+                column: 1,
+            })?;
+
+        self.advance();
+
+        let body = self.parse_element_body(base_indent)?;
+
+        // Extract source from properties
+        let source = body.properties.iter()
+            .find(|p| p.name == "src" || p.name == "source")
+            .and_then(|p| match &p.value {
+                PropertyValue::String(s) => Some(parse_image_source(s)),
+                PropertyValue::TokenRef(path) => Some(ImageSource::TokenRef(path.clone())),
+                _ => None,
+            })
+            .unwrap_or(ImageSource::File(String::new()));
+
+        // Extract fit mode from properties
+        let fit = body.properties.iter()
+            .find(|p| p.name == "fit" || p.name == "object-fit")
+            .and_then(|p| match &p.value {
+                PropertyValue::String(s) | PropertyValue::Enum(s) => Some(parse_image_fit(s)),
+                _ => None,
+            })
+            .unwrap_or(ImageFit::Cover);
+
+        // Extract alt text
+        let alt = body.properties.iter()
+            .find(|p| p.name == "alt")
+            .and_then(|p| match &p.value {
+                PropertyValue::String(s) => Some(s.clone()),
+                _ => None,
+            });
+
+        Ok(ImageElement {
+            name: name.map(|s| Identifier(s.to_string())),
+            source,
+            fit,
+            alt,
+            properties: body.properties,
+            constraints: body.constraints,
+            span: Span {
+                line: line_num as u32,
+                ..Default::default()
+            },
+        })
+    }
+
+    /// Parse an Icon element.
+    fn parse_icon_element(&mut self) -> Result<IconElement, ParseError> {
+        let line = self.current().ok_or(ParseError::UnexpectedEof)?;
+        let base_indent = line.indent;
+        let content = line.content;
+        let line_num = line.line_number;
+
+        let name = parse_element_header(content, "Icon")
+            .map_err(|_| ParseError::UnexpectedToken {
+                found: content.to_string(),
+                expected: "Icon element".to_string(),
+                line: line_num as u32,
+                column: 1,
+            })?;
+
+        self.advance();
+
+        let body = self.parse_element_body(base_indent)?;
+
+        // Extract icon source from properties
+        let icon = body.properties.iter()
+            .find(|p| p.name == "icon" || p.name == "name")
+            .and_then(|p| match &p.value {
+                PropertyValue::String(s) => Some(parse_icon_source(s)),
+                PropertyValue::TokenRef(path) => Some(IconSource::TokenRef(path.clone())),
+                _ => None,
+            })
+            .unwrap_or(IconSource::Named { library: None, name: String::new() });
+
+        // Extract size
+        let size = body.properties.iter()
+            .find(|p| p.name == "size")
+            .and_then(|p| match &p.value {
+                PropertyValue::Length(l) => Some(l.clone()),
+                PropertyValue::Number(n) => Some(Length { value: *n, unit: LengthUnit::Px }),
+                _ => None,
+            });
+
+        // Extract color
+        let color = body.properties.iter()
+            .find(|p| p.name == "color")
+            .and_then(|p| match &p.value {
+                PropertyValue::Color(c) => Some(c.clone()),
+                _ => None,
+            });
+
+        Ok(IconElement {
+            name: name.map(|s| Identifier(s.to_string())),
+            icon,
+            size,
+            color,
+            properties: body.properties,
+            constraints: body.constraints,
             span: Span {
                 line: line_num as u32,
                 ..Default::default()
@@ -2005,6 +2135,66 @@ fn parse_viewbox(input: &str) -> Option<SvgViewBox> {
         })
     } else {
         None
+    }
+}
+
+/// Parse image source string into ImageSource type.
+fn parse_image_source(s: &str) -> ImageSource {
+    let s = s.trim();
+
+    // Check for data URL
+    if s.starts_with("data:") {
+        if let Some(comma_pos) = s.find(',') {
+            let header = &s[5..comma_pos]; // after "data:"
+            let data = &s[comma_pos + 1..];
+            // Parse "image/png;base64" -> mime_type = "image/png"
+            let mime_type = header.split(';').next().unwrap_or("application/octet-stream");
+            return ImageSource::Data {
+                mime_type: mime_type.to_string(),
+                data: data.to_string(),
+            };
+        }
+    }
+
+    // Check for URL (http/https)
+    if s.starts_with("http://") || s.starts_with("https://") {
+        return ImageSource::Url(s.to_string());
+    }
+
+    // Otherwise treat as file path
+    ImageSource::File(s.to_string())
+}
+
+/// Parse image fit mode string.
+fn parse_image_fit(s: &str) -> ImageFit {
+    match s.to_lowercase().as_str() {
+        "cover" => ImageFit::Cover,
+        "contain" => ImageFit::Contain,
+        "fill" => ImageFit::Fill,
+        "none" => ImageFit::None,
+        "scale-down" | "scaledown" => ImageFit::ScaleDown,
+        _ => ImageFit::Cover,
+    }
+}
+
+/// Parse icon source string into IconSource type.
+fn parse_icon_source(s: &str) -> IconSource {
+    let s = s.trim();
+
+    // Check for library:name format (e.g., "lucide:home", "material:settings")
+    if let Some(colon_pos) = s.find(':') {
+        let library = &s[..colon_pos];
+        let name = &s[colon_pos + 1..];
+        return IconSource::Named {
+            library: Some(library.to_string()),
+            name: name.to_string(),
+        };
+    }
+
+    // Otherwise just the icon name
+    IconSource::Named {
+        library: None,
+        name: s.to_string(),
     }
 }
 

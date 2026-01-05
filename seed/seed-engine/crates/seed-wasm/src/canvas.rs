@@ -134,6 +134,15 @@ impl CanvasRenderer {
             Element::Text(text) => {
                 self.render_text_node(node, &text.content, &text.properties);
             }
+            Element::Svg(svg) => {
+                self.render_svg_node(node, svg);
+            }
+            Element::Image(image) => {
+                self.render_image_node(node, image);
+            }
+            Element::Icon(icon) => {
+                self.render_icon_node(node, icon);
+            }
             Element::Part(_) | Element::Component(_) | Element::Slot(_) => {
                 // These are either 3D or should be expanded
             }
@@ -242,6 +251,224 @@ impl CanvasRenderer {
         let _ = self.ctx.fill_text(&text, bounds.x, bounds.y);
     }
 
+    fn render_svg_node(&self, node: &LayoutNode, svg: &seed_core::ast::SvgElement) {
+        use seed_core::ast::SvgPathCommand;
+
+        let bounds = &node.absolute_bounds;
+
+        // Get viewBox or use default
+        let (vb_x, vb_y, vb_w, vb_h) = svg.view_box
+            .as_ref()
+            .map(|vb| (vb.min_x, vb.min_y, vb.width, vb.height))
+            .unwrap_or((0.0, 0.0, 24.0, 24.0));
+
+        // Calculate scale factors
+        let scale_x = bounds.width / vb_w;
+        let scale_y = bounds.height / vb_h;
+
+        for path in &svg.paths {
+            self.ctx.begin_path();
+
+            // Track current position for relative commands
+            let mut cur_x = 0.0;
+            let mut cur_y = 0.0;
+            let mut start_x = 0.0;
+            let mut start_y = 0.0;
+
+            for cmd in &path.commands {
+                match cmd {
+                    SvgPathCommand::MoveTo { x, y } => {
+                        let px = bounds.x + (*x - vb_x) * scale_x;
+                        let py = bounds.y + (*y - vb_y) * scale_y;
+                        self.ctx.move_to(px, py);
+                        cur_x = *x;
+                        cur_y = *y;
+                        start_x = cur_x;
+                        start_y = cur_y;
+                    }
+                    SvgPathCommand::MoveToRel { dx, dy } => {
+                        cur_x += *dx;
+                        cur_y += *dy;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.move_to(px, py);
+                        start_x = cur_x;
+                        start_y = cur_y;
+                    }
+                    SvgPathCommand::LineTo { x, y } => {
+                        let px = bounds.x + (*x - vb_x) * scale_x;
+                        let py = bounds.y + (*y - vb_y) * scale_y;
+                        self.ctx.line_to(px, py);
+                        cur_x = *x;
+                        cur_y = *y;
+                    }
+                    SvgPathCommand::LineToRel { dx, dy } => {
+                        cur_x += *dx;
+                        cur_y += *dy;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.line_to(px, py);
+                    }
+                    SvgPathCommand::HorizontalTo { x } => {
+                        cur_x = *x;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.line_to(px, py);
+                    }
+                    SvgPathCommand::HorizontalToRel { dx } => {
+                        cur_x += *dx;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.line_to(px, py);
+                    }
+                    SvgPathCommand::VerticalTo { y } => {
+                        cur_y = *y;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.line_to(px, py);
+                    }
+                    SvgPathCommand::VerticalToRel { dy } => {
+                        cur_y += *dy;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.line_to(px, py);
+                    }
+                    SvgPathCommand::CubicTo { x1, y1, x2, y2, x, y } => {
+                        let px1 = bounds.x + (*x1 - vb_x) * scale_x;
+                        let py1 = bounds.y + (*y1 - vb_y) * scale_y;
+                        let px2 = bounds.x + (*x2 - vb_x) * scale_x;
+                        let py2 = bounds.y + (*y2 - vb_y) * scale_y;
+                        let px = bounds.x + (*x - vb_x) * scale_x;
+                        let py = bounds.y + (*y - vb_y) * scale_y;
+                        self.ctx.bezier_curve_to(px1, py1, px2, py2, px, py);
+                        cur_x = *x;
+                        cur_y = *y;
+                    }
+                    SvgPathCommand::CubicToRel { dx1, dy1, dx2, dy2, dx, dy } => {
+                        let px1 = bounds.x + (cur_x + *dx1 - vb_x) * scale_x;
+                        let py1 = bounds.y + (cur_y + *dy1 - vb_y) * scale_y;
+                        let px2 = bounds.x + (cur_x + *dx2 - vb_x) * scale_x;
+                        let py2 = bounds.y + (cur_y + *dy2 - vb_y) * scale_y;
+                        cur_x += *dx;
+                        cur_y += *dy;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.bezier_curve_to(px1, py1, px2, py2, px, py);
+                    }
+                    SvgPathCommand::SmoothCubicTo { x2, y2, x, y } => {
+                        // Simplified: use current point as first control
+                        let px1 = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py1 = bounds.y + (cur_y - vb_y) * scale_y;
+                        let px2 = bounds.x + (*x2 - vb_x) * scale_x;
+                        let py2 = bounds.y + (*y2 - vb_y) * scale_y;
+                        let px = bounds.x + (*x - vb_x) * scale_x;
+                        let py = bounds.y + (*y - vb_y) * scale_y;
+                        self.ctx.bezier_curve_to(px1, py1, px2, py2, px, py);
+                        cur_x = *x;
+                        cur_y = *y;
+                    }
+                    SvgPathCommand::SmoothCubicToRel { dx2, dy2, dx, dy } => {
+                        let px1 = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py1 = bounds.y + (cur_y - vb_y) * scale_y;
+                        let px2 = bounds.x + (cur_x + *dx2 - vb_x) * scale_x;
+                        let py2 = bounds.y + (cur_y + *dy2 - vb_y) * scale_y;
+                        cur_x += *dx;
+                        cur_y += *dy;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.bezier_curve_to(px1, py1, px2, py2, px, py);
+                    }
+                    SvgPathCommand::QuadTo { x1, y1, x, y } => {
+                        let px1 = bounds.x + (*x1 - vb_x) * scale_x;
+                        let py1 = bounds.y + (*y1 - vb_y) * scale_y;
+                        let px = bounds.x + (*x - vb_x) * scale_x;
+                        let py = bounds.y + (*y - vb_y) * scale_y;
+                        self.ctx.quadratic_curve_to(px1, py1, px, py);
+                        cur_x = *x;
+                        cur_y = *y;
+                    }
+                    SvgPathCommand::QuadToRel { dx1, dy1, dx, dy } => {
+                        let px1 = bounds.x + (cur_x + *dx1 - vb_x) * scale_x;
+                        let py1 = bounds.y + (cur_y + *dy1 - vb_y) * scale_y;
+                        cur_x += *dx;
+                        cur_y += *dy;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.quadratic_curve_to(px1, py1, px, py);
+                    }
+                    SvgPathCommand::SmoothQuadTo { x, y } => {
+                        // Simplified: use line
+                        let px = bounds.x + (*x - vb_x) * scale_x;
+                        let py = bounds.y + (*y - vb_y) * scale_y;
+                        self.ctx.line_to(px, py);
+                        cur_x = *x;
+                        cur_y = *y;
+                    }
+                    SvgPathCommand::SmoothQuadToRel { dx, dy } => {
+                        cur_x += *dx;
+                        cur_y += *dy;
+                        let px = bounds.x + (cur_x - vb_x) * scale_x;
+                        let py = bounds.y + (cur_y - vb_y) * scale_y;
+                        self.ctx.line_to(px, py);
+                    }
+                    SvgPathCommand::ArcTo { rx, ry, x_rotation: _, large_arc: _, sweep: _, x, y } => {
+                        // Canvas doesn't have direct arc support with SVG params
+                        // Approximate with line for now
+                        if *rx > 0.0 && *ry > 0.0 {
+                            // Use ellipse approximation via arc_to
+                            let end_x = bounds.x + (*x - vb_x) * scale_x;
+                            let end_y = bounds.y + (*y - vb_y) * scale_y;
+                            self.ctx.line_to(end_x, end_y);
+                        } else {
+                            let px = bounds.x + (*x - vb_x) * scale_x;
+                            let py = bounds.y + (*y - vb_y) * scale_y;
+                            self.ctx.line_to(px, py);
+                        }
+                        cur_x = *x;
+                        cur_y = *y;
+                    }
+                    SvgPathCommand::ArcToRel { rx, ry, x_rotation: _, large_arc: _, sweep: _, dx, dy } => {
+                        let end_x = cur_x + *dx;
+                        let end_y = cur_y + *dy;
+                        if *rx > 0.0 && *ry > 0.0 {
+                            let px = bounds.x + (end_x - vb_x) * scale_x;
+                            let py = bounds.y + (end_y - vb_y) * scale_y;
+                            self.ctx.line_to(px, py);
+                        } else {
+                            let px = bounds.x + (end_x - vb_x) * scale_x;
+                            let py = bounds.y + (end_y - vb_y) * scale_y;
+                            self.ctx.line_to(px, py);
+                        }
+                        cur_x = end_x;
+                        cur_y = end_y;
+                    }
+                    SvgPathCommand::ClosePath => {
+                        self.ctx.close_path();
+                        cur_x = start_x;
+                        cur_y = start_y;
+                    }
+                }
+            }
+
+            // Apply fill
+            if let Some(color) = path.fill {
+                let css = color_to_css(&color);
+                self.ctx.set_fill_style_str(&css);
+                self.ctx.fill();
+            }
+
+            // Apply stroke
+            if let Some(color) = path.stroke {
+                let css = color_to_css(&color);
+                self.ctx.set_stroke_style_str(&css);
+                if let Some(width) = path.stroke_width {
+                    self.ctx.set_line_width(width * scale_x.min(scale_y));
+                }
+                self.ctx.stroke();
+            }
+        }
+    }
+
     fn draw_rounded_rect(&self, x: f64, y: f64, width: f64, height: f64, radius: f64) {
         let r = radius.min(width / 2.0).min(height / 2.0);
 
@@ -256,6 +483,114 @@ impl CanvasRenderer {
         self.ctx.line_to(x, y + r);
         self.ctx.arc_to(x, y, x + r, y, r).unwrap_or(());
         self.ctx.close_path();
+    }
+
+    fn render_image_node(&self, node: &LayoutNode, _image: &seed_core::ast::ImageElement) {
+        let bounds = &node.absolute_bounds;
+
+        // For now, render a placeholder rectangle with X pattern
+        // Full image loading would require async fetch
+        self.ctx.set_fill_style_str("#c8c8c8");
+        self.ctx.fill_rect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+        self.ctx.set_stroke_style_str("#969696");
+        self.ctx.set_line_width(1.0);
+        self.ctx.stroke_rect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+        // Draw X pattern
+        self.ctx.begin_path();
+        self.ctx.move_to(bounds.x, bounds.y);
+        self.ctx.line_to(bounds.x + bounds.width, bounds.y + bounds.height);
+        self.ctx.move_to(bounds.x + bounds.width, bounds.y);
+        self.ctx.line_to(bounds.x, bounds.y + bounds.height);
+        self.ctx.stroke();
+    }
+
+    fn render_icon_node(&self, node: &LayoutNode, icon: &seed_core::ast::IconElement) {
+        use seed_core::ast::SvgPathCommand;
+
+        let bounds = &node.absolute_bounds;
+
+        // Get color
+        let color = icon.color.unwrap_or(seed_core::types::Color::BLACK);
+        let css = color_to_css(&color);
+
+        match &icon.icon {
+            seed_core::ast::IconSource::Svg(paths) => {
+                // Render inline SVG paths
+                let scale_x = bounds.width / 24.0;
+                let scale_y = bounds.height / 24.0;
+
+                for path in paths {
+                    self.ctx.begin_path();
+
+                    let mut cur_x = 0.0;
+                    let mut cur_y = 0.0;
+                    let mut start_x = 0.0;
+                    let mut start_y = 0.0;
+
+                    for cmd in &path.commands {
+                        match cmd {
+                            SvgPathCommand::MoveTo { x, y } => {
+                                let px = bounds.x + *x * scale_x;
+                                let py = bounds.y + *y * scale_y;
+                                self.ctx.move_to(px, py);
+                                cur_x = *x;
+                                cur_y = *y;
+                                start_x = cur_x;
+                                start_y = cur_y;
+                            }
+                            SvgPathCommand::LineTo { x, y } => {
+                                let px = bounds.x + *x * scale_x;
+                                let py = bounds.y + *y * scale_y;
+                                self.ctx.line_to(px, py);
+                                cur_x = *x;
+                                cur_y = *y;
+                            }
+                            SvgPathCommand::LineToRel { dx, dy } => {
+                                cur_x += *dx;
+                                cur_y += *dy;
+                                let px = bounds.x + cur_x * scale_x;
+                                let py = bounds.y + cur_y * scale_y;
+                                self.ctx.line_to(px, py);
+                            }
+                            SvgPathCommand::ClosePath => {
+                                self.ctx.close_path();
+                                cur_x = start_x;
+                                cur_y = start_y;
+                            }
+                            // Skip other commands for simplicity
+                            _ => {}
+                        }
+                    }
+
+                    // Apply fill
+                    let fill_color = path.fill.unwrap_or(color);
+                    self.ctx.set_fill_style_str(&color_to_css(&fill_color));
+                    self.ctx.fill();
+
+                    // Apply stroke if present
+                    if let Some(stroke) = path.stroke {
+                        self.ctx.set_stroke_style_str(&color_to_css(&stroke));
+                        if let Some(width) = path.stroke_width {
+                            self.ctx.set_line_width(width * scale_x.min(scale_y));
+                        }
+                        self.ctx.stroke();
+                    }
+                }
+            }
+            _ => {
+                // Named icons or token refs: render placeholder circle
+                let cx = bounds.x + bounds.width / 2.0;
+                let cy = bounds.y + bounds.height / 2.0;
+                let r = bounds.width.min(bounds.height) / 2.0;
+
+                self.ctx.begin_path();
+                self.ctx.arc(cx, cy, r, 0.0, std::f64::consts::PI * 2.0).unwrap_or(());
+                self.ctx.set_fill_style_str(&css);
+                self.ctx.fill();
+            }
+        }
     }
 }
 

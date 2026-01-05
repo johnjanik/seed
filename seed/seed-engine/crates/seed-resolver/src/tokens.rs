@@ -7,6 +7,7 @@ use seed_core::{
     Document, TokenMap, ResolveError, ResolvedToken,
     ast::{
         Element, FrameElement, TextElement, PartElement, ComponentElement,
+        ImageElement, IconElement,
         Property, PropertyValue, TextContent, TokenPath, Constraint,
         Expression, ConstraintKind,
     },
@@ -52,6 +53,9 @@ impl<'a> TokenResolver<'a> {
             Element::Text(text) => {
                 Ok(Element::Text(self.resolve_text(text)?))
             }
+            Element::Svg(svg) => {
+                Ok(Element::Svg(self.resolve_svg(svg)?))
+            }
             Element::Part(part) => {
                 Ok(Element::Part(self.resolve_part(part)?))
             }
@@ -62,7 +66,37 @@ impl<'a> TokenResolver<'a> {
                 // Slots are handled during component expansion, pass through
                 Ok(Element::Slot(slot.clone()))
             }
+            Element::Image(image) => {
+                Ok(Element::Image(self.resolve_image(image)?))
+            }
+            Element::Icon(icon) => {
+                Ok(Element::Icon(self.resolve_icon(icon)?))
+            }
         }
+    }
+
+    fn resolve_image(&mut self, image: &ImageElement) -> Result<ImageElement, ResolveError> {
+        let mut resolved = image.clone();
+
+        // Resolve properties (source token refs would be resolved via property resolution)
+        resolved.properties = image.properties
+            .iter()
+            .map(|p| self.resolve_property(p))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(resolved)
+    }
+
+    fn resolve_icon(&mut self, icon: &IconElement) -> Result<IconElement, ResolveError> {
+        let mut resolved = icon.clone();
+
+        // Resolve properties
+        resolved.properties = icon.properties
+            .iter()
+            .map(|p| self.resolve_property(p))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(resolved)
     }
 
     fn resolve_frame(&mut self, frame: &FrameElement) -> Result<FrameElement, ResolveError> {
@@ -99,6 +133,24 @@ impl<'a> TokenResolver<'a> {
         resolved.properties = text.properties
             .iter()
             .map(|p| self.resolve_property(p))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(resolved)
+    }
+
+    fn resolve_svg(&mut self, svg: &seed_core::ast::SvgElement) -> Result<seed_core::ast::SvgElement, ResolveError> {
+        let mut resolved = svg.clone();
+
+        // Resolve properties
+        resolved.properties = svg.properties
+            .iter()
+            .map(|p| self.resolve_property(p))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Resolve constraints
+        resolved.constraints = svg.constraints
+            .iter()
+            .map(|c| self.resolve_constraint(c))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(resolved)

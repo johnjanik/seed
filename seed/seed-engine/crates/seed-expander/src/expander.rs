@@ -90,6 +90,18 @@ impl<'a> ComponentExpander<'a> {
             Element::Text(text) => {
                 Ok(vec![Element::Text(text.clone())])
             }
+            Element::Svg(svg) => {
+                // SVG elements don't have children to expand
+                Ok(vec![Element::Svg(svg.clone())])
+            }
+            Element::Image(image) => {
+                // Image elements don't have children to expand
+                Ok(vec![Element::Image(image.clone())])
+            }
+            Element::Icon(icon) => {
+                // Icon elements don't have children to expand
+                Ok(vec![Element::Icon(icon.clone())])
+            }
             Element::Part(part) => {
                 Ok(vec![Element::Part(self.expand_part(part)?)])
             }
@@ -201,6 +213,18 @@ impl<'a> ComponentExpander<'a> {
                 Element::Text(text) => {
                     result.push(Element::Text(self.substitute_text(text, prop_context)?));
                 }
+                Element::Svg(svg) => {
+                    // SVG elements can have property substitution
+                    result.push(Element::Svg(self.substitute_svg(svg, prop_context)?));
+                }
+                Element::Image(image) => {
+                    // Image elements can have property substitution
+                    result.push(Element::Image(self.substitute_image(image, prop_context)?));
+                }
+                Element::Icon(icon) => {
+                    // Icon elements can have property substitution
+                    result.push(Element::Icon(self.substitute_icon(icon, prop_context)?));
+                }
                 Element::Part(part) => {
                     result.push(Element::Part(self.substitute_part(part, prop_context)?));
                 }
@@ -254,6 +278,54 @@ impl<'a> ComponentExpander<'a> {
 
         // Substitute prop refs in text content
         result.content = self.substitute_text_content(&text.content, prop_context)?;
+
+        Ok(result)
+    }
+
+    fn substitute_svg(
+        &self,
+        svg: &seed_core::ast::SvgElement,
+        prop_context: &PropContext,
+    ) -> Result<seed_core::ast::SvgElement, ExpandError> {
+        let mut result = svg.clone();
+
+        // Substitute props in properties
+        result.properties = svg.properties
+            .iter()
+            .map(|p| self.substitute_property(p, prop_context))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(result)
+    }
+
+    fn substitute_image(
+        &self,
+        image: &seed_core::ast::ImageElement,
+        prop_context: &PropContext,
+    ) -> Result<seed_core::ast::ImageElement, ExpandError> {
+        let mut result = image.clone();
+
+        // Substitute props in properties
+        result.properties = image.properties
+            .iter()
+            .map(|p| self.substitute_property(p, prop_context))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(result)
+    }
+
+    fn substitute_icon(
+        &self,
+        icon: &seed_core::ast::IconElement,
+        prop_context: &PropContext,
+    ) -> Result<seed_core::ast::IconElement, ExpandError> {
+        let mut result = icon.clone();
+
+        // Substitute props in properties
+        result.properties = icon.properties
+            .iter()
+            .map(|p| self.substitute_property(p, prop_context))
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(result)
     }

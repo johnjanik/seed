@@ -16,6 +16,7 @@ seed-expander.workspace = true
 seed-constraint.workspace = true
 seed-layout.workspace = true
 seed-export.workspace = true
+seed-analyze.workspace = true
 
 wasm-bindgen.workspace = true
 serde-wasm-bindgen.workspace = true

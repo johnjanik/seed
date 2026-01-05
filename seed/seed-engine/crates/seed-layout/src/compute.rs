@@ -96,6 +96,8 @@ fn layout_element(
         Element::Frame(frame) => layout_frame(ctx, frame, parent_id, solution),
         Element::Text(text) => layout_text(ctx, text, parent_id, solution),
         Element::Svg(svg) => layout_svg(ctx, svg, parent_id, solution),
+        Element::Image(image) => layout_image(ctx, image, parent_id, solution),
+        Element::Icon(icon) => layout_icon(ctx, icon, parent_id, solution),
         Element::Part(_) => {
             // 3D parts don't have 2D layout
             let node_id = ctx.tree.next_id();
@@ -274,6 +276,95 @@ fn layout_svg(
     }
     if bounds.height == 0.0 {
         bounds.height = svg.view_box.map(|vb| vb.height).unwrap_or(24.0);
+    }
+
+    let node_id = ctx.tree.next_id();
+    let element_id = ElementId(node_id.0);
+
+    let node = LayoutNode::new(node_id)
+        .with_element_id(element_id)
+        .with_name(&name)
+        .with_bounds(bounds);
+
+    ctx.element_names.insert(name.clone(), element_id);
+
+    if let Some(pid) = parent_id {
+        ctx.tree.add_child(pid, node);
+    } else {
+        ctx.tree.add_root(node);
+    }
+
+    Ok(node_id)
+}
+
+/// Layout an Image element.
+fn layout_image(
+    ctx: &mut LayoutContext,
+    image: &seed_core::ast::ImageElement,
+    parent_id: Option<LayoutNodeId>,
+    solution: &Solution,
+) -> Result<LayoutNodeId, LayoutError> {
+    let name = image.name
+        .as_ref()
+        .map(|id| id.0.clone())
+        .unwrap_or_else(|| ctx.generate_name("image"));
+
+    // Get bounds from constraint solution or use defaults
+    let mut bounds = get_bounds_from_solution(ctx, &name, solution, parent_id);
+
+    // Default image size if not specified (common placeholder size)
+    if bounds.width == 0.0 {
+        bounds.width = 100.0;
+    }
+    if bounds.height == 0.0 {
+        bounds.height = 100.0;
+    }
+
+    let node_id = ctx.tree.next_id();
+    let element_id = ElementId(node_id.0);
+
+    let node = LayoutNode::new(node_id)
+        .with_element_id(element_id)
+        .with_name(&name)
+        .with_bounds(bounds);
+
+    ctx.element_names.insert(name.clone(), element_id);
+
+    if let Some(pid) = parent_id {
+        ctx.tree.add_child(pid, node);
+    } else {
+        ctx.tree.add_root(node);
+    }
+
+    Ok(node_id)
+}
+
+/// Layout an Icon element.
+fn layout_icon(
+    ctx: &mut LayoutContext,
+    icon: &seed_core::ast::IconElement,
+    parent_id: Option<LayoutNodeId>,
+    solution: &Solution,
+) -> Result<LayoutNodeId, LayoutError> {
+    let name = icon.name
+        .as_ref()
+        .map(|id| id.0.clone())
+        .unwrap_or_else(|| ctx.generate_name("icon"));
+
+    // Get bounds from constraint solution
+    let mut bounds = get_bounds_from_solution(ctx, &name, solution, parent_id);
+
+    // Use icon size if specified, or default to 24x24 (common icon size)
+    let icon_size = icon.size
+        .as_ref()
+        .and_then(|l| l.to_px(None))
+        .unwrap_or(24.0);
+
+    if bounds.width == 0.0 {
+        bounds.width = icon_size;
+    }
+    if bounds.height == 0.0 {
+        bounds.height = icon_size;
     }
 
     let node_id = ctx.tree.next_id();

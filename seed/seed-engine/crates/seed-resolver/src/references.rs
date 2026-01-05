@@ -8,6 +8,7 @@ use seed_core::{
     Document, ResolveError,
     ast::{
         Element, FrameElement, TextElement, PartElement, ComponentElement,
+        ImageElement, IconElement,
         Constraint, ConstraintKind, ElementRef,
     },
 };
@@ -95,10 +96,37 @@ impl ReferenceResolver {
         match element {
             Element::Frame(frame) => Ok(Element::Frame(self.resolve_frame(frame)?)),
             Element::Text(text) => Ok(Element::Text(self.resolve_text(text)?)),
+            Element::Svg(svg) => Ok(Element::Svg(self.resolve_svg(svg)?)),
+            Element::Image(image) => Ok(Element::Image(self.resolve_image(image)?)),
+            Element::Icon(icon) => Ok(Element::Icon(self.resolve_icon(icon)?)),
             Element::Part(part) => Ok(Element::Part(self.resolve_part(part)?)),
             Element::Component(comp) => Ok(Element::Component(self.resolve_component(comp)?)),
             Element::Slot(slot) => Ok(Element::Slot(slot.clone())),
         }
+    }
+
+    fn resolve_image(&mut self, image: &ImageElement) -> Result<ImageElement, ResolveError> {
+        let mut resolved = image.clone();
+
+        // Validate constraints
+        resolved.constraints = image.constraints
+            .iter()
+            .map(|c| self.validate_constraint(c))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(resolved)
+    }
+
+    fn resolve_icon(&mut self, icon: &IconElement) -> Result<IconElement, ResolveError> {
+        let mut resolved = icon.clone();
+
+        // Validate constraints
+        resolved.constraints = icon.constraints
+            .iter()
+            .map(|c| self.validate_constraint(c))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(resolved)
     }
 
     fn resolve_frame(&mut self, frame: &FrameElement) -> Result<FrameElement, ResolveError> {
@@ -142,6 +170,18 @@ impl ReferenceResolver {
     fn resolve_text(&mut self, text: &TextElement) -> Result<TextElement, ResolveError> {
         // Text elements don't have constraints or children
         Ok(text.clone())
+    }
+
+    fn resolve_svg(&mut self, svg: &seed_core::ast::SvgElement) -> Result<seed_core::ast::SvgElement, ResolveError> {
+        let mut resolved = svg.clone();
+
+        // Validate constraints
+        resolved.constraints = svg.constraints
+            .iter()
+            .map(|c| self.validate_constraint(c))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(resolved)
     }
 
     fn resolve_part(&mut self, part: &PartElement) -> Result<PartElement, ResolveError> {
@@ -266,6 +306,9 @@ fn get_element_name(element: &Element) -> Option<String> {
     match element {
         Element::Frame(f) => f.name.as_ref().map(|id| id.0.clone()),
         Element::Text(t) => t.name.as_ref().map(|id| id.0.clone()),
+        Element::Svg(s) => s.name.as_ref().map(|id| id.0.clone()),
+        Element::Image(i) => i.name.as_ref().map(|id| id.0.clone()),
+        Element::Icon(i) => i.name.as_ref().map(|id| id.0.clone()),
         Element::Part(p) => p.name.as_ref().map(|id| id.0.clone()),
         Element::Component(c) => c.instance_name.as_ref().map(|id| id.0.clone()),
         Element::Slot(_) => None, // Slots don't have names

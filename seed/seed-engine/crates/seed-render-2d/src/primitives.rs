@@ -498,4 +498,32 @@ impl Scene {
     pub fn pop_clip(&mut self) {
         self.commands.push(RenderCommand::PopClip);
     }
+
+    /// Add a polygon (filled/stroked path from vertices).
+    pub fn polygon(&mut self, vertices: Vec<Vec2>, fill: Option<Fill>, stroke: Option<Stroke>) {
+        if vertices.is_empty() {
+            return;
+        }
+
+        let mut path = PathPrimitive::new();
+
+        // Build path from vertices
+        if let Some(&first) = vertices.first() {
+            path.commands.push(PathCommand::MoveTo(first));
+            for &vertex in vertices.iter().skip(1) {
+                path.commands.push(PathCommand::LineTo(vertex));
+            }
+            path.commands.push(PathCommand::Close);
+        }
+
+        path.fill = fill;
+        path.stroke = stroke;
+
+        self.commands.push(RenderCommand::Path(path));
+    }
+
+    /// Add a path directly.
+    pub fn path(&mut self, path: PathPrimitive) {
+        self.commands.push(RenderCommand::Path(path));
+    }
 }
