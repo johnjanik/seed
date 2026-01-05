@@ -366,18 +366,157 @@ fn get_length_from_properties(properties: &[Property], name: &str) -> Option<f64
 mod tests {
     use super::*;
     use seed_core::ast::*;
+    use seed_core::types::Identifier;
+    use seed_layout::{compute_layout, LayoutOptions};
+
+    fn make_frame(name: &str, width: f64, height: f64, children: Vec<Element>) -> Element {
+        Element::Frame(FrameElement {
+            name: Some(Identifier(name.to_string())),
+            properties: vec![
+                Property {
+                    name: "fill".to_string(),
+                    value: PropertyValue::Color(Color::rgb(0.5, 0.5, 0.5)),
+                    span: Span::default(),
+                },
+            ],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(width),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(height),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children,
+            span: Span::default(),
+        })
+    }
+
+    fn make_doc(elements: Vec<Element>) -> Document {
+        Document {
+            meta: None,
+            tokens: None,
+            elements,
+            span: Span::default(),
+        }
+    }
 
     #[test]
     fn test_build_empty_scene() {
-        let doc = Document {
-            meta: None,
-            tokens: None,
-            elements: vec![],
-            span: Span::default(),
-        };
+        let doc = make_doc(vec![]);
         let layout = LayoutTree::new();
 
         let scene = build_scene(&doc, &layout);
         assert!(scene.commands.is_empty());
+    }
+
+    #[test]
+    fn test_build_single_frame_scene() {
+        let doc = make_doc(vec![make_frame("root", 200.0, 100.0, vec![])]);
+        let layout = compute_layout(&doc, &LayoutOptions::default()).unwrap();
+
+        let scene = build_scene(&doc, &layout);
+
+        // Should have exactly one rect command for the single frame
+        let rect_count = scene.commands.iter().filter(|cmd| {
+            matches!(cmd, RenderCommand::Rect(_) | RenderCommand::RoundedRect(_))
+        }).count();
+        assert_eq!(rect_count, 1, "Expected 1 rect command for single frame");
+    }
+
+    #[test]
+    fn test_build_nested_frames_scene() {
+        // Create parent with one child
+        let child = make_frame("child", 80.0, 40.0, vec![]);
+        let parent = make_frame("parent", 200.0, 100.0, vec![child]);
+
+        let doc = make_doc(vec![parent]);
+        let layout = compute_layout(&doc, &LayoutOptions::default()).unwrap();
+
+        let scene = build_scene(&doc, &layout);
+
+        // Should have exactly 2 rect commands: one for parent, one for child
+        let rect_count = scene.commands.iter().filter(|cmd| {
+            matches!(cmd, RenderCommand::Rect(_) | RenderCommand::RoundedRect(_))
+        }).count();
+        assert_eq!(rect_count, 2, "Expected 2 rect commands for parent + child");
+    }
+
+    #[test]
+    fn test_build_multiple_children_scene() {
+        // Create parent with multiple children
+        let child1 = make_frame("child1", 50.0, 30.0, vec![]);
+        let child2 = make_frame("child2", 50.0, 30.0, vec![]);
+        let child3 = make_frame("child3", 50.0, 30.0, vec![]);
+        let parent = make_frame("parent", 200.0, 100.0, vec![child1, child2, child3]);
+
+        let doc = make_doc(vec![parent]);
+        let layout = compute_layout(&doc, &LayoutOptions::default()).unwrap();
+
+        let scene = build_scene(&doc, &layout);
+
+        // Should have exactly 4 rect commands: parent + 3 children
+        let rect_count = scene.commands.iter().filter(|cmd| {
+            matches!(cmd, RenderCommand::Rect(_) | RenderCommand::RoundedRect(_))
+        }).count();
+        assert_eq!(rect_count, 4, "Expected 4 rect commands for parent + 3 children");
+    }
+
+    #[test]
+    fn test_build_deeply_nested_frames_scene() {
+        // Create a 4-level deep nesting: root > level1 > level2 > level3
+        let level3 = make_frame("level3", 20.0, 20.0, vec![]);
+        let level2 = make_frame("level2", 40.0, 40.0, vec![level3]);
+        let level1 = make_frame("level1", 80.0, 80.0, vec![level2]);
+        let root = make_frame("root", 200.0, 200.0, vec![level1]);
+
+        let doc = make_doc(vec![root]);
+        let layout = compute_layout(&doc, &LayoutOptions::default()).unwrap();
+
+        let scene = build_scene(&doc, &layout);
+
+        // Should have exactly 4 rect commands: one per level
+        let rect_count = scene.commands.iter().filter(|cmd| {
+            matches!(cmd, RenderCommand::Rect(_) | RenderCommand::RoundedRect(_))
+        }).count();
+        assert_eq!(rect_count, 4, "Expected 4 rect commands for 4 levels of nesting");
+    }
+
+    #[test]
+    fn test_build_complex_tree_scene() {
+        // Create a more complex tree:
+        // root
+        // ├── branch1
+        // │   ├── leaf1a
+        // │   └── leaf1b
+        // └── branch2
+        //     └── leaf2a
+        let leaf1a = make_frame("leaf1a", 20.0, 20.0, vec![]);
+        let leaf1b = make_frame("leaf1b", 20.0, 20.0, vec![]);
+        let leaf2a = make_frame("leaf2a", 20.0, 20.0, vec![]);
+        let branch1 = make_frame("branch1", 60.0, 50.0, vec![leaf1a, leaf1b]);
+        let branch2 = make_frame("branch2", 60.0, 50.0, vec![leaf2a]);
+        let root = make_frame("root", 200.0, 150.0, vec![branch1, branch2]);
+
+        let doc = make_doc(vec![root]);
+        let layout = compute_layout(&doc, &LayoutOptions::default()).unwrap();
+
+        let scene = build_scene(&doc, &layout);
+
+        // Should have exactly 6 rect commands: root + 2 branches + 3 leaves
+        let rect_count = scene.commands.iter().filter(|cmd| {
+            matches!(cmd, RenderCommand::Rect(_) | RenderCommand::RoundedRect(_))
+        }).count();
+        assert_eq!(rect_count, 6, "Expected 6 rect commands for complex tree");
     }
 }

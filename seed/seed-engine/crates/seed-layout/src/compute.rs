@@ -534,4 +534,306 @@ mod tests {
         let parent_node = tree.get(tree.roots()[0]).unwrap();
         assert_eq!(parent_node.children.len(), 1);
     }
+
+    #[test]
+    fn test_compute_multiple_children() {
+        let child1 = make_frame_element("child1", 50.0, 30.0);
+        let child2 = make_frame_element("child2", 60.0, 40.0);
+        let child3 = make_frame_element("child3", 70.0, 50.0);
+
+        let parent = Element::Frame(FrameElement {
+            name: Some(Identifier("parent".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(300.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(200.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![child1, child2, child3],
+            span: Span::default(),
+        });
+
+        let mut doc = make_empty_doc();
+        doc.elements.push(parent);
+
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+
+        let parent_node = tree.get(tree.roots()[0]).unwrap();
+        assert_eq!(parent_node.children.len(), 3, "Parent should have 3 children");
+
+        // Verify each child has correct dimensions
+        for (i, &child_id) in parent_node.children.iter().enumerate() {
+            let child = tree.get(child_id).unwrap();
+            let expected_width = 50.0 + (i as f64) * 10.0;
+            let expected_height = 30.0 + (i as f64) * 10.0;
+            assert!(
+                (child.bounds.width - expected_width).abs() < 0.001,
+                "Child {} width mismatch: expected {}, got {}",
+                i, expected_width, child.bounds.width
+            );
+            assert!(
+                (child.bounds.height - expected_height).abs() < 0.001,
+                "Child {} height mismatch: expected {}, got {}",
+                i, expected_height, child.bounds.height
+            );
+        }
+    }
+
+    #[test]
+    fn test_compute_deeply_nested_frames() {
+        // Create 5 levels of nesting
+        let level4 = make_frame_element("level4", 10.0, 10.0);
+
+        let level3 = Element::Frame(FrameElement {
+            name: Some(Identifier("level3".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(20.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(20.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![level4],
+            span: Span::default(),
+        });
+
+        let level2 = Element::Frame(FrameElement {
+            name: Some(Identifier("level2".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(40.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(40.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![level3],
+            span: Span::default(),
+        });
+
+        let level1 = Element::Frame(FrameElement {
+            name: Some(Identifier("level1".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(80.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(80.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![level2],
+            span: Span::default(),
+        });
+
+        let root = Element::Frame(FrameElement {
+            name: Some(Identifier("root".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(160.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(160.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![level1],
+            span: Span::default(),
+        });
+
+        let mut doc = make_empty_doc();
+        doc.elements.push(root);
+
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+
+        // Verify the structure is correct
+        let root_node = tree.get(tree.roots()[0]).unwrap();
+        assert_eq!(root_node.children.len(), 1, "Root should have 1 child");
+
+        let l1_node = tree.get(root_node.children[0]).unwrap();
+        assert_eq!(l1_node.children.len(), 1, "Level1 should have 1 child");
+
+        let l2_node = tree.get(l1_node.children[0]).unwrap();
+        assert_eq!(l2_node.children.len(), 1, "Level2 should have 1 child");
+
+        let l3_node = tree.get(l2_node.children[0]).unwrap();
+        assert_eq!(l3_node.children.len(), 1, "Level3 should have 1 child");
+
+        let l4_node = tree.get(l3_node.children[0]).unwrap();
+        assert_eq!(l4_node.children.len(), 0, "Level4 should have 0 children");
+
+        // Verify dimensions
+        assert!((l4_node.bounds.width - 10.0).abs() < 0.001);
+        assert!((l4_node.bounds.height - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compute_complex_tree() {
+        // Build a complex tree structure:
+        // root
+        // ├── branch1
+        // │   ├── leaf1a
+        // │   └── leaf1b
+        // └── branch2
+        //     ├── leaf2a
+        //     └── leaf2b
+
+        let leaf1a = make_frame_element("leaf1a", 20.0, 20.0);
+        let leaf1b = make_frame_element("leaf1b", 25.0, 25.0);
+        let leaf2a = make_frame_element("leaf2a", 30.0, 30.0);
+        let leaf2b = make_frame_element("leaf2b", 35.0, 35.0);
+
+        let branch1 = Element::Frame(FrameElement {
+            name: Some(Identifier("branch1".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(100.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(80.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![leaf1a, leaf1b],
+            span: Span::default(),
+        });
+
+        let branch2 = Element::Frame(FrameElement {
+            name: Some(Identifier("branch2".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(120.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(100.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![leaf2a, leaf2b],
+            span: Span::default(),
+        });
+
+        let root = Element::Frame(FrameElement {
+            name: Some(Identifier("root".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(300.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(250.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![branch1, branch2],
+            span: Span::default(),
+        });
+
+        let mut doc = make_empty_doc();
+        doc.elements.push(root);
+
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+
+        // Count total nodes
+        let total_nodes = tree.nodes().count();
+        assert_eq!(total_nodes, 7, "Should have 7 total nodes: root + 2 branches + 4 leaves");
+
+        // Verify root has 2 children (branches)
+        let root_node = tree.get(tree.roots()[0]).unwrap();
+        assert_eq!(root_node.children.len(), 2, "Root should have 2 children");
+
+        // Verify each branch has 2 children (leaves)
+        for &branch_id in &root_node.children {
+            let branch = tree.get(branch_id).unwrap();
+            assert_eq!(branch.children.len(), 2, "Each branch should have 2 leaves");
+        }
+    }
 }
