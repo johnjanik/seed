@@ -7,6 +7,7 @@
 //! - STEP (3D CAD interchange - AP203)
 //! - STL (3D printing)
 //! - 3MF (3D Manufacturing Format)
+//! - G-Code (CNC/3D printer toolpaths)
 
 #[cfg(feature = "svg")]
 pub mod svg;
@@ -17,6 +18,7 @@ pub mod pdf;
 #[cfg(feature = "3mf")]
 pub mod threemf;
 
+pub mod gcode;
 pub mod png;
 pub mod step;
 pub mod stl;
@@ -25,6 +27,7 @@ use seed_core::{Document, ExportError};
 use seed_layout::LayoutTree;
 
 // Re-export commonly used types
+pub use gcode::{GCodeOptions, MachineType};
 pub use png::PngOptions;
 pub use stl::{mesh_to_stl, mesh_to_stl_ascii};
 pub use step::{StepOptions, LengthUnit};
@@ -93,6 +96,19 @@ pub fn export_3mf_with_options(
     options: &ThreeMfOptions,
 ) -> Result<Vec<u8>, ExportError> {
     threemf::export_with_options(doc, options)
+}
+
+/// Export a 3D document to G-Code for CNC/3D printing.
+pub fn export_gcode(doc: &Document) -> Result<String, ExportError> {
+    gcode::export(doc)
+}
+
+/// Export a 3D document to G-Code with custom options.
+pub fn export_gcode_with_options(
+    doc: &Document,
+    options: &GCodeOptions,
+) -> Result<String, ExportError> {
+    gcode::export_with_options(doc, options)
 }
 
 #[cfg(test)]
