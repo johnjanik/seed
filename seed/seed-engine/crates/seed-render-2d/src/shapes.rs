@@ -438,6 +438,8 @@ fn convert_line_join(join: crate::primitives::LineJoin) -> lyon::tessellation::L
 mod tests {
     use super::*;
     use seed_core::types::Color;
+    use glam::Vec2;
+    use crate::primitives::{GradientStop, LinearGradient, RadialGradient};
 
     #[test]
     fn test_tessellate_rect() {
@@ -479,5 +481,409 @@ mod tests {
 
         assert!(!mesh.vertices.is_empty());
         assert!(!mesh.indices.is_empty());
+    }
+
+    // Gradient sampling tests
+
+    #[test]
+    fn test_sample_gradient_stops_empty() {
+        let stops: Vec<GradientStop> = vec![];
+        let color = sample_gradient_stops(&stops, 0.5);
+        // Empty stops should return white
+        assert_eq!(color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_sample_gradient_stops_single() {
+        let stops = vec![
+            GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+        ];
+        let color = sample_gradient_stops(&stops, 0.5);
+        // Single stop should return that color regardless of t
+        assert!((color[0] - 1.0).abs() < 0.001);
+        assert!((color[1] - 0.0).abs() < 0.001);
+        assert!((color[2] - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_sample_gradient_stops_two_stops_at_start() {
+        let stops = vec![
+            GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+            GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 1.0) },
+        ];
+        let color = sample_gradient_stops(&stops, 0.0);
+        // At t=0, should be red
+        assert!((color[0] - 1.0).abs() < 0.001);
+        assert!((color[1] - 0.0).abs() < 0.001);
+        assert!((color[2] - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_sample_gradient_stops_two_stops_at_end() {
+        let stops = vec![
+            GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+            GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 1.0) },
+        ];
+        let color = sample_gradient_stops(&stops, 1.0);
+        // At t=1, should be blue
+        assert!((color[0] - 0.0).abs() < 0.001);
+        assert!((color[1] - 0.0).abs() < 0.001);
+        assert!((color[2] - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_sample_gradient_stops_two_stops_midpoint() {
+        let stops = vec![
+            GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+            GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 1.0) },
+        ];
+        let color = sample_gradient_stops(&stops, 0.5);
+        // At t=0.5, should be 50% red + 50% blue = purple
+        assert!((color[0] - 0.5).abs() < 0.001);
+        assert!((color[1] - 0.0).abs() < 0.001);
+        assert!((color[2] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_sample_gradient_stops_three_stops() {
+        let stops = vec![
+            GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+            GradientStop { offset: 0.5, color: Color::rgb(0.0, 1.0, 0.0) },
+            GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 1.0) },
+        ];
+
+        // At t=0.25, should be between red and green
+        let color = sample_gradient_stops(&stops, 0.25);
+        assert!((color[0] - 0.5).abs() < 0.001);
+        assert!((color[1] - 0.5).abs() < 0.001);
+        assert!((color[2] - 0.0).abs() < 0.001);
+
+        // At t=0.5, should be green
+        let color = sample_gradient_stops(&stops, 0.5);
+        assert!((color[0] - 0.0).abs() < 0.001);
+        assert!((color[1] - 1.0).abs() < 0.001);
+        assert!((color[2] - 0.0).abs() < 0.001);
+
+        // At t=0.75, should be between green and blue
+        let color = sample_gradient_stops(&stops, 0.75);
+        assert!((color[0] - 0.0).abs() < 0.001);
+        assert!((color[1] - 0.5).abs() < 0.001);
+        assert!((color[2] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_sample_gradient_stops_clamps_below_zero() {
+        let stops = vec![
+            GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+            GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 1.0) },
+        ];
+        let color = sample_gradient_stops(&stops, -0.5);
+        // Below 0 should clamp to first stop
+        assert!((color[0] - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_sample_gradient_stops_clamps_above_one() {
+        let stops = vec![
+            GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+            GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 1.0) },
+        ];
+        let color = sample_gradient_stops(&stops, 1.5);
+        // Above 1 should clamp to last stop
+        assert!((color[2] - 1.0).abs() < 0.001);
+    }
+
+    // Linear gradient tests
+
+    #[test]
+    fn test_linear_gradient_t_horizontal() {
+        let gradient = LinearGradient {
+            start: Vec2::new(0.0, 0.0),
+            end: Vec2::new(100.0, 0.0),
+            stops: vec![],
+        };
+
+        assert!((linear_gradient_t(&gradient, 0.0, 0.0) - 0.0).abs() < 0.001);
+        assert!((linear_gradient_t(&gradient, 50.0, 0.0) - 0.5).abs() < 0.001);
+        assert!((linear_gradient_t(&gradient, 100.0, 0.0) - 1.0).abs() < 0.001);
+        // Y position shouldn't matter for horizontal gradient
+        assert!((linear_gradient_t(&gradient, 50.0, 100.0) - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_linear_gradient_t_vertical() {
+        let gradient = LinearGradient {
+            start: Vec2::new(0.0, 0.0),
+            end: Vec2::new(0.0, 100.0),
+            stops: vec![],
+        };
+
+        assert!((linear_gradient_t(&gradient, 0.0, 0.0) - 0.0).abs() < 0.001);
+        assert!((linear_gradient_t(&gradient, 0.0, 50.0) - 0.5).abs() < 0.001);
+        assert!((linear_gradient_t(&gradient, 0.0, 100.0) - 1.0).abs() < 0.001);
+        // X position shouldn't matter for vertical gradient
+        assert!((linear_gradient_t(&gradient, 100.0, 50.0) - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_linear_gradient_t_diagonal() {
+        let gradient = LinearGradient {
+            start: Vec2::new(0.0, 0.0),
+            end: Vec2::new(100.0, 100.0),
+            stops: vec![],
+        };
+
+        assert!((linear_gradient_t(&gradient, 0.0, 0.0) - 0.0).abs() < 0.001);
+        assert!((linear_gradient_t(&gradient, 50.0, 50.0) - 0.5).abs() < 0.001);
+        assert!((linear_gradient_t(&gradient, 100.0, 100.0) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_linear_gradient_t_clamps() {
+        let gradient = LinearGradient {
+            start: Vec2::new(0.0, 0.0),
+            end: Vec2::new(100.0, 0.0),
+            stops: vec![],
+        };
+
+        // Before start should clamp to 0
+        assert!((linear_gradient_t(&gradient, -50.0, 0.0) - 0.0).abs() < 0.001);
+        // After end should clamp to 1
+        assert!((linear_gradient_t(&gradient, 150.0, 0.0) - 1.0).abs() < 0.001);
+    }
+
+    // Radial gradient tests
+
+    #[test]
+    fn test_radial_gradient_t_at_center() {
+        let gradient = RadialGradient {
+            center: Vec2::new(50.0, 50.0),
+            radius: 50.0,
+            stops: vec![],
+        };
+
+        assert!((radial_gradient_t(&gradient, 50.0, 50.0) - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_radial_gradient_t_at_edge() {
+        let gradient = RadialGradient {
+            center: Vec2::new(50.0, 50.0),
+            radius: 50.0,
+            stops: vec![],
+        };
+
+        // At radius distance from center
+        assert!((radial_gradient_t(&gradient, 100.0, 50.0) - 1.0).abs() < 0.001);
+        assert!((radial_gradient_t(&gradient, 50.0, 100.0) - 1.0).abs() < 0.001);
+        assert!((radial_gradient_t(&gradient, 0.0, 50.0) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_radial_gradient_t_halfway() {
+        let gradient = RadialGradient {
+            center: Vec2::new(50.0, 50.0),
+            radius: 50.0,
+            stops: vec![],
+        };
+
+        // Halfway to edge
+        assert!((radial_gradient_t(&gradient, 75.0, 50.0) - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_radial_gradient_t_clamps() {
+        let gradient = RadialGradient {
+            center: Vec2::new(50.0, 50.0),
+            radius: 50.0,
+            stops: vec![],
+        };
+
+        // Beyond radius should clamp to 1
+        assert!((radial_gradient_t(&gradient, 150.0, 50.0) - 1.0).abs() < 0.001);
+    }
+
+    // fill_color_at tests
+
+    #[test]
+    fn test_fill_color_at_solid() {
+        let fill = Fill::Solid(Color::rgba(0.5, 0.6, 0.7, 0.8));
+        let color = fill_color_at(&fill, 0.0, 0.0);
+
+        assert!((color[0] - 0.5).abs() < 0.001);
+        assert!((color[1] - 0.6).abs() < 0.001);
+        assert!((color[2] - 0.7).abs() < 0.001);
+        assert!((color[3] - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_fill_color_at_linear_gradient() {
+        let fill = Fill::LinearGradient(LinearGradient {
+            start: Vec2::new(0.0, 0.0),
+            end: Vec2::new(100.0, 0.0),
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+                GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 1.0) },
+            ],
+        });
+
+        // At start, should be red
+        let color = fill_color_at(&fill, 0.0, 0.0);
+        assert!((color[0] - 1.0).abs() < 0.001);
+        assert!((color[2] - 0.0).abs() < 0.001);
+
+        // At middle, should be purple
+        let color = fill_color_at(&fill, 50.0, 0.0);
+        assert!((color[0] - 0.5).abs() < 0.001);
+        assert!((color[2] - 0.5).abs() < 0.001);
+
+        // At end, should be blue
+        let color = fill_color_at(&fill, 100.0, 0.0);
+        assert!((color[0] - 0.0).abs() < 0.001);
+        assert!((color[2] - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_fill_color_at_radial_gradient() {
+        let fill = Fill::RadialGradient(RadialGradient {
+            center: Vec2::new(50.0, 50.0),
+            radius: 50.0,
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color::rgb(1.0, 1.0, 0.0) },
+                GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 1.0) },
+            ],
+        });
+
+        // At center, should be yellow
+        let color = fill_color_at(&fill, 50.0, 50.0);
+        assert!((color[0] - 1.0).abs() < 0.001);
+        assert!((color[1] - 1.0).abs() < 0.001);
+        assert!((color[2] - 0.0).abs() < 0.001);
+
+        // At edge, should be blue
+        let color = fill_color_at(&fill, 100.0, 50.0);
+        assert!((color[0] - 0.0).abs() < 0.001);
+        assert!((color[1] - 0.0).abs() < 0.001);
+        assert!((color[2] - 1.0).abs() < 0.001);
+    }
+
+    // Tessellation with gradient tests
+
+    #[test]
+    fn test_tessellate_rect_with_linear_gradient() {
+        let mut tessellator = Tessellator::new();
+        let mut mesh = Mesh::new();
+
+        let gradient = LinearGradient::new(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0))
+            .add_stop(0.0, Color::rgb(1.0, 0.0, 0.0))
+            .add_stop(1.0, Color::rgb(0.0, 0.0, 1.0));
+
+        let rect = RectPrimitive::new(0.0, 0.0, 100.0, 50.0)
+            .with_fill(Fill::LinearGradient(gradient));
+
+        tessellator.tessellate_rect(&rect, &mut mesh);
+
+        assert_eq!(mesh.vertices.len(), 4);
+        assert_eq!(mesh.indices.len(), 6);
+
+        // Check that vertices have varying colors based on position
+        // Left vertices should be more red
+        // Right vertices should be more blue
+        let left_vertices: Vec<_> = mesh.vertices.iter()
+            .filter(|v| v.position[0] < 50.0)
+            .collect();
+        let right_vertices: Vec<_> = mesh.vertices.iter()
+            .filter(|v| v.position[0] > 50.0)
+            .collect();
+
+        assert!(!left_vertices.is_empty());
+        assert!(!right_vertices.is_empty());
+
+        // Left should be redder than right
+        let left_red: f32 = left_vertices.iter().map(|v| v.color[0]).sum::<f32>() / left_vertices.len() as f32;
+        let right_red: f32 = right_vertices.iter().map(|v| v.color[0]).sum::<f32>() / right_vertices.len() as f32;
+        assert!(left_red > right_red, "Left side should be more red");
+    }
+
+    #[test]
+    fn test_tessellate_rect_with_radial_gradient() {
+        let mut tessellator = Tessellator::new();
+        let mut mesh = Mesh::new();
+
+        let gradient = RadialGradient {
+            center: Vec2::new(50.0, 25.0),
+            radius: 50.0,
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color::rgb(1.0, 1.0, 1.0) },
+                GradientStop { offset: 1.0, color: Color::rgb(0.0, 0.0, 0.0) },
+            ],
+        };
+
+        let rect = RectPrimitive::new(0.0, 0.0, 100.0, 50.0)
+            .with_fill(Fill::RadialGradient(gradient));
+
+        tessellator.tessellate_rect(&rect, &mut mesh);
+
+        assert_eq!(mesh.vertices.len(), 4);
+        assert_eq!(mesh.indices.len(), 6);
+    }
+
+    #[test]
+    fn test_tessellate_rounded_rect_with_gradient() {
+        let mut tessellator = Tessellator::new();
+        let mut mesh = Mesh::new();
+
+        let gradient = LinearGradient::new(Vec2::new(0.0, 0.0), Vec2::new(0.0, 100.0))
+            .add_stop(0.0, Color::rgb(1.0, 0.5, 0.0))
+            .add_stop(1.0, Color::rgb(0.5, 0.0, 1.0));
+
+        let rect = RoundedRectPrimitive::new(0.0, 0.0, 100.0, 100.0, 20.0)
+            .with_fill(Fill::LinearGradient(gradient));
+
+        tessellator.tessellate_rounded_rect(&rect, &mut mesh);
+
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn test_tessellate_ellipse_with_radial_gradient() {
+        let mut tessellator = Tessellator::new();
+        let mut mesh = Mesh::new();
+
+        let gradient = RadialGradient {
+            center: Vec2::new(50.0, 50.0),
+            radius: 40.0,
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color::rgb(1.0, 0.0, 0.0) },
+                GradientStop { offset: 0.5, color: Color::rgb(1.0, 1.0, 0.0) },
+                GradientStop { offset: 1.0, color: Color::rgb(0.0, 1.0, 0.0) },
+            ],
+        };
+
+        let ellipse = EllipsePrimitive::circle(50.0, 50.0, 40.0)
+            .with_fill(Fill::RadialGradient(gradient));
+
+        tessellator.tessellate_ellipse(&ellipse, &mut mesh);
+
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn test_lerp_color() {
+        let a = Color::rgb(1.0, 0.0, 0.0);
+        let b = Color::rgb(0.0, 0.0, 1.0);
+
+        let mid = lerp_color(&a, &b, 0.5);
+        assert!((mid[0] - 0.5).abs() < 0.001);
+        assert!((mid[1] - 0.0).abs() < 0.001);
+        assert!((mid[2] - 0.5).abs() < 0.001);
+
+        let start = lerp_color(&a, &b, 0.0);
+        assert!((start[0] - 1.0).abs() < 0.001);
+
+        let end = lerp_color(&a, &b, 1.0);
+        assert!((end[2] - 1.0).abs() < 0.001);
     }
 }
