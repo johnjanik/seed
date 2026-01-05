@@ -73,6 +73,7 @@ pub enum TokenValue {
 pub enum Element {
     Frame(FrameElement),
     Text(TextElement),
+    Svg(SvgElement),
     Part(PartElement),
     Component(ComponentElement),
     Slot(SlotElement),
@@ -106,6 +107,127 @@ pub struct TextElement {
 pub enum TextContent {
     Literal(String),
     TokenRef(TokenPath),
+}
+
+/// An SVG element for vector graphics and icons.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SvgElement {
+    pub name: Option<Identifier>,
+    /// SVG path data (d attribute) or paths list
+    pub paths: Vec<SvgPath>,
+    /// ViewBox dimensions (minX, minY, width, height)
+    pub view_box: Option<SvgViewBox>,
+    /// Properties like fill, stroke, width, height, x, y
+    pub properties: Vec<Property>,
+    pub constraints: Vec<Constraint>,
+    pub span: Span,
+}
+
+/// ViewBox for SVG coordinate system.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SvgViewBox {
+    pub min_x: f64,
+    pub min_y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Default for SvgViewBox {
+    fn default() -> Self {
+        Self {
+            min_x: 0.0,
+            min_y: 0.0,
+            width: 24.0,
+            height: 24.0,
+        }
+    }
+}
+
+/// A single SVG path with its own fill/stroke.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SvgPath {
+    /// Path commands
+    pub commands: Vec<SvgPathCommand>,
+    /// Optional fill color for this path
+    pub fill: Option<crate::types::Color>,
+    /// Optional stroke color for this path
+    pub stroke: Option<crate::types::Color>,
+    /// Optional stroke width for this path
+    pub stroke_width: Option<f64>,
+    /// Fill rule: nonzero or evenodd
+    pub fill_rule: SvgFillRule,
+}
+
+/// SVG fill rule for determining inside/outside of paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SvgFillRule {
+    #[default]
+    NonZero,
+    EvenOdd,
+}
+
+/// SVG path commands (subset of SVG path spec).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SvgPathCommand {
+    /// M x,y - Move to absolute position
+    MoveTo { x: f64, y: f64 },
+    /// m dx,dy - Move to relative position
+    MoveToRel { dx: f64, dy: f64 },
+    /// L x,y - Line to absolute position
+    LineTo { x: f64, y: f64 },
+    /// l dx,dy - Line to relative position
+    LineToRel { dx: f64, dy: f64 },
+    /// H x - Horizontal line to absolute x
+    HorizontalTo { x: f64 },
+    /// h dx - Horizontal line relative
+    HorizontalToRel { dx: f64 },
+    /// V y - Vertical line to absolute y
+    VerticalTo { y: f64 },
+    /// v dy - Vertical line relative
+    VerticalToRel { dy: f64 },
+    /// C x1,y1 x2,y2 x,y - Cubic bezier absolute
+    CubicTo { x1: f64, y1: f64, x2: f64, y2: f64, x: f64, y: f64 },
+    /// c dx1,dy1 dx2,dy2 dx,dy - Cubic bezier relative
+    CubicToRel { dx1: f64, dy1: f64, dx2: f64, dy2: f64, dx: f64, dy: f64 },
+    /// S x2,y2 x,y - Smooth cubic bezier absolute
+    SmoothCubicTo { x2: f64, y2: f64, x: f64, y: f64 },
+    /// s dx2,dy2 dx,dy - Smooth cubic bezier relative
+    SmoothCubicToRel { dx2: f64, dy2: f64, dx: f64, dy: f64 },
+    /// Q x1,y1 x,y - Quadratic bezier absolute
+    QuadTo { x1: f64, y1: f64, x: f64, y: f64 },
+    /// q dx1,dy1 dx,dy - Quadratic bezier relative
+    QuadToRel { dx1: f64, dy1: f64, dx: f64, dy: f64 },
+    /// T x,y - Smooth quadratic bezier absolute
+    SmoothQuadTo { x: f64, y: f64 },
+    /// t dx,dy - Smooth quadratic bezier relative
+    SmoothQuadToRel { dx: f64, dy: f64 },
+    /// A rx,ry x-axis-rotation large-arc-flag sweep-flag x,y - Arc absolute
+    ArcTo {
+        rx: f64,
+        ry: f64,
+        x_rotation: f64,
+        large_arc: bool,
+        sweep: bool,
+        x: f64,
+        y: f64,
+    },
+    /// a rx,ry x-axis-rotation large-arc-flag sweep-flag dx,dy - Arc relative
+    ArcToRel {
+        rx: f64,
+        ry: f64,
+        x_rotation: f64,
+        large_arc: bool,
+        sweep: bool,
+        dx: f64,
+        dy: f64,
+    },
+    /// Z/z - Close path
+    ClosePath,
 }
 
 /// A Part element (3D geometry).
@@ -182,6 +304,66 @@ pub enum PropertyValue {
     Enum(String),
     /// Reference to a component prop (used in templates)
     PropRef(PropRef),
+    /// Grid track sizes (for columns/rows)
+    GridTracks(Vec<GridTrackSize>),
+    /// Grid line reference (e.g., "1 / 3" or "1 / -1")
+    GridLine(GridLineValue),
+}
+
+/// Grid track size definition (for CSS Grid-like layouts).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GridTrackSize {
+    /// Fixed size in pixels
+    Fixed(f64),
+    /// Fraction of available space (fr units)
+    Fraction(f64),
+    /// Content-based sizing
+    Auto,
+    /// Minimum content size
+    MinContent,
+    /// Maximum content size
+    MaxContent,
+    /// Bounded size: minmax(min, max)
+    MinMax { min: Box<GridTrackSize>, max: Box<GridTrackSize> },
+    /// Repeat pattern: repeat(count, size) or repeat(auto-fill, size)
+    Repeat { count: RepeatCount, sizes: Vec<GridTrackSize> },
+}
+
+/// Repeat count for grid tracks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RepeatCount {
+    /// Fixed number of repetitions
+    Count(u32),
+    /// Auto-fill: fill container with as many tracks as fit
+    AutoFill,
+    /// Auto-fit: like auto-fill but collapses empty tracks
+    AutoFit,
+}
+
+/// Grid line value for placement (grid-column, grid-row).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GridLineValue {
+    /// Start line (1-indexed, negative counts from end)
+    pub start: GridLine,
+    /// End line (optional, defaults to span 1)
+    pub end: Option<GridLine>,
+}
+
+/// A grid line reference.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GridLine {
+    /// Line number (1-indexed, negative from end)
+    Number(i32),
+    /// Span a number of tracks
+    Span(u32),
+    /// Named line
+    Named(String),
+    /// Auto placement
+    Auto,
 }
 
 /// A constraint on an element.

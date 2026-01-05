@@ -82,6 +82,11 @@ impl<'a> Parser<'a> {
             return self.parse_text_element().map(|t| Some(Element::Text(t)));
         }
 
+        // Try to parse as Svg
+        if content.starts_with("Svg ") || content == "Svg:" {
+            return self.parse_svg_element().map(|s| Some(Element::Svg(s)));
+        }
+
         Ok(None)
     }
 
@@ -159,6 +164,144 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse an SVG element.
+    fn parse_svg_element(&mut self) -> Result<SvgElement, ParseError> {
+        let line = self.current().ok_or(ParseError::UnexpectedEof)?;
+        let base_indent = line.indent;
+        let content = line.content;
+        let line_num = line.line_number;
+
+        let name = parse_element_header(content, "Svg")
+            .map_err(|_| ParseError::UnexpectedToken {
+                found: content.to_string(),
+                expected: "Svg element".to_string(),
+                line: line_num as u32,
+                column: 1,
+            })?;
+
+        self.advance();
+
+        // Parse SVG body manually to handle path children
+        let mut paths = Vec::new();
+        let mut view_box = None;
+        let mut other_properties = Vec::new();
+        let mut constraints = Vec::new();
+
+        let child_indent = base_indent + 2;
+
+        while let Some(line) = self.current() {
+            if line.indent <= base_indent {
+                break;
+            }
+
+            if line.indent < child_indent {
+                break;
+            }
+
+            let content = line.content;
+            let current_indent = line.indent;
+
+            // Check for constraints block
+            if content == "constraints:" {
+                self.advance();
+                constraints = self.parse_constraints_block(current_indent)?;
+                continue;
+            }
+
+            // Try to parse as property
+            if let Some(prop) = self.parse_property(content)? {
+                match prop.name.as_str() {
+                    "d" | "path" => {
+                        if let PropertyValue::String(path_str) = &prop.value {
+                            if let Ok(commands) = parse_svg_path_data(path_str) {
+                                let path_indent = current_indent;
+                                self.advance();
+
+                                // Look for nested path properties
+                                let mut fill = None;
+                                let mut stroke = None;
+                                let mut stroke_width = None;
+                                let mut fill_rule = SvgFillRule::default();
+
+                                while let Some(nested_line) = self.current() {
+                                    if nested_line.indent <= path_indent {
+                                        break;
+                                    }
+
+                                    if let Some(nested_prop) = self.parse_property(nested_line.content)? {
+                                        match nested_prop.name.as_str() {
+                                            "fill" => {
+                                                if let PropertyValue::Color(c) = nested_prop.value {
+                                                    fill = Some(c);
+                                                }
+                                            }
+                                            "stroke" => {
+                                                if let PropertyValue::Color(c) = nested_prop.value {
+                                                    stroke = Some(c);
+                                                }
+                                            }
+                                            "stroke-width" | "strokeWidth" => {
+                                                if let PropertyValue::Length(l) = nested_prop.value {
+                                                    stroke_width = l.to_px(None);
+                                                } else if let PropertyValue::Number(n) = nested_prop.value {
+                                                    stroke_width = Some(n);
+                                                }
+                                            }
+                                            "fill-rule" | "fillRule" => {
+                                                if let PropertyValue::String(s) = &nested_prop.value {
+                                                    fill_rule = match s.as_str() {
+                                                        "evenodd" | "even-odd" => SvgFillRule::EvenOdd,
+                                                        _ => SvgFillRule::NonZero,
+                                                    };
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    self.advance();
+                                }
+
+                                paths.push(SvgPath {
+                                    commands,
+                                    fill,
+                                    stroke,
+                                    stroke_width,
+                                    fill_rule,
+                                });
+                                continue;
+                            }
+                        }
+                    }
+                    "viewBox" | "view-box" => {
+                        if let PropertyValue::String(vb_str) = &prop.value {
+                            if let Some(vb) = parse_viewbox(vb_str) {
+                                view_box = Some(vb);
+                            }
+                        }
+                    }
+                    _ => other_properties.push(prop),
+                }
+                self.advance();
+                continue;
+            }
+
+            // Unknown line, skip
+            self.advance();
+        }
+
+        Ok(SvgElement {
+            name: name.map(|s| Identifier(s.to_string())),
+            paths,
+            view_box,
+            properties: other_properties,
+            constraints,
+            span: Span {
+                line: line_num as u32,
+                ..Default::default()
+            },
+        })
+    }
+
     /// Parse the body of an element (properties, constraints, children).
     fn parse_element_body(&mut self, parent_indent: usize) -> Result<ElementBody, ParseError> {
         let mut properties = Vec::new();
@@ -189,8 +332,8 @@ impl<'a> Parser<'a> {
             }
 
             // Check for child element
-            if content.starts_with("Frame ") || content.starts_with("Text ")
-               || content == "Frame:" || content == "Text:" {
+            if content.starts_with("Frame ") || content.starts_with("Text ") || content.starts_with("Svg ")
+               || content == "Frame:" || content == "Text:" || content == "Svg:" {
                 if let Some(elem) = self.parse_element(child_indent)? {
                     children.push(elem);
                 }
@@ -297,6 +440,25 @@ fn parse_element_header<'a>(content: &'a str, keyword: &str) -> Result<Option<&'
 /// Parse a property value.
 fn parse_property_value(input: &str) -> Result<PropertyValue, ParseError> {
     let input = input.trim();
+
+    // Grid track definitions: [1fr, 2fr, auto] or repeat(3, 1fr)
+    if input.starts_with('[') && input.ends_with(']') {
+        if let Ok(tracks) = parse_grid_tracks(input) {
+            return Ok(PropertyValue::GridTracks(tracks));
+        }
+    }
+    if input.starts_with("repeat(") {
+        if let Ok(tracks) = parse_grid_repeat(input) {
+            return Ok(PropertyValue::GridTracks(tracks));
+        }
+    }
+
+    // Grid line placement: "1 / 3" or "1 / -1" or "span 2"
+    if input.contains(" / ") || input.starts_with("span ") {
+        if let Ok(line) = parse_grid_line_value(input) {
+            return Ok(PropertyValue::GridLine(line));
+        }
+    }
 
     // Transform functions
     if input.starts_with("rotate(") {
@@ -616,6 +778,204 @@ fn parse_shadow_color(input: &str) -> Option<Color> {
             _ => None,
         }
     }
+}
+
+/// Parse grid track sizes: [1fr, 2fr, auto] or [100px, 1fr, minmax(100px, 1fr)]
+fn parse_grid_tracks(input: &str) -> Result<Vec<GridTrackSize>, ParseError> {
+    // Strip brackets
+    let inner = input
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .ok_or_else(|| ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: "grid track list [...]".to_string(),
+            line: 0,
+            column: 0,
+        })?;
+
+    let parts = split_grid_args(inner);
+    let mut tracks = Vec::new();
+
+    for part in parts {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        tracks.push(parse_single_track(part)?);
+    }
+
+    Ok(tracks)
+}
+
+/// Parse repeat() syntax: repeat(3, 1fr) or repeat(auto-fill, minmax(200px, 1fr))
+fn parse_grid_repeat(input: &str) -> Result<Vec<GridTrackSize>, ParseError> {
+    let inner = extract_function_args(input, "repeat")?;
+    let parts: Vec<&str> = split_grid_args(inner);
+
+    if parts.len() < 2 {
+        return Err(ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: "repeat(count, track-size)".to_string(),
+            line: 0,
+            column: 0,
+        });
+    }
+
+    let count_str = parts[0].trim();
+    let count = match count_str {
+        "auto-fill" => RepeatCount::AutoFill,
+        "auto-fit" => RepeatCount::AutoFit,
+        _ => {
+            let n = count_str.parse::<u32>().map_err(|_| ParseError::UnexpectedToken {
+                found: count_str.to_string(),
+                expected: "repeat count (number or auto-fill/auto-fit)".to_string(),
+                line: 0,
+                column: 0,
+            })?;
+            RepeatCount::Count(n)
+        }
+    };
+
+    // Parse the track sizes to repeat
+    let mut sizes = Vec::new();
+    for part in &parts[1..] {
+        sizes.push(parse_single_track(part.trim())?);
+    }
+
+    Ok(vec![GridTrackSize::Repeat { count, sizes }])
+}
+
+/// Parse a single grid track size: 1fr, auto, 100px, minmax(100px, 1fr), etc.
+fn parse_single_track(input: &str) -> Result<GridTrackSize, ParseError> {
+    let input = input.trim();
+
+    // Keywords
+    match input {
+        "auto" => return Ok(GridTrackSize::Auto),
+        "min-content" => return Ok(GridTrackSize::MinContent),
+        "max-content" => return Ok(GridTrackSize::MaxContent),
+        _ => {}
+    }
+
+    // minmax(min, max)
+    if input.starts_with("minmax(") {
+        let inner = extract_function_args(input, "minmax")?;
+        let parts: Vec<&str> = split_grid_args(inner);
+        if parts.len() != 2 {
+            return Err(ParseError::UnexpectedToken {
+                found: input.to_string(),
+                expected: "minmax(min, max)".to_string(),
+                line: 0,
+                column: 0,
+            });
+        }
+        let min = parse_single_track(parts[0].trim())?;
+        let max = parse_single_track(parts[1].trim())?;
+        return Ok(GridTrackSize::MinMax {
+            min: Box::new(min),
+            max: Box::new(max),
+        });
+    }
+
+    // Fraction unit (e.g., 1fr, 2.5fr)
+    if let Some(fr_str) = input.strip_suffix("fr") {
+        let value = fr_str.trim().parse::<f64>().map_err(|_| ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: "fraction value (e.g., 1fr)".to_string(),
+            line: 0,
+            column: 0,
+        })?;
+        return Ok(GridTrackSize::Fraction(value));
+    }
+
+    // Fixed size (e.g., 100px, 50%)
+    if let Some(px) = parse_length_value(input) {
+        return Ok(GridTrackSize::Fixed(px));
+    }
+
+    Err(ParseError::UnexpectedToken {
+        found: input.to_string(),
+        expected: "grid track size (auto, fr, px, minmax, etc.)".to_string(),
+        line: 0,
+        column: 0,
+    })
+}
+
+/// Parse grid line value: "1 / 3", "1 / -1", "span 2", "1 / span 2"
+fn parse_grid_line_value(input: &str) -> Result<GridLineValue, ParseError> {
+    let input = input.trim();
+
+    // Check for "/" separator
+    if let Some(slash_pos) = input.find(" / ") {
+        let start_str = input[..slash_pos].trim();
+        let end_str = input[slash_pos + 3..].trim();
+
+        let start = parse_single_grid_line(start_str)?;
+        let end = parse_single_grid_line(end_str)?;
+
+        return Ok(GridLineValue {
+            start,
+            end: Some(end),
+        });
+    }
+
+    // Single value (e.g., "span 2" or "1")
+    let start = parse_single_grid_line(input)?;
+    Ok(GridLineValue { start, end: None })
+}
+
+/// Parse a single grid line reference: "1", "-1", "span 2", "header-start"
+fn parse_single_grid_line(input: &str) -> Result<GridLine, ParseError> {
+    let input = input.trim();
+
+    // "auto"
+    if input == "auto" {
+        return Ok(GridLine::Auto);
+    }
+
+    // "span N"
+    if let Some(span_str) = input.strip_prefix("span ") {
+        let n = span_str.trim().parse::<u32>().map_err(|_| ParseError::UnexpectedToken {
+            found: input.to_string(),
+            expected: "span count".to_string(),
+            line: 0,
+            column: 0,
+        })?;
+        return Ok(GridLine::Span(n));
+    }
+
+    // Number (can be negative)
+    if let Ok(n) = input.parse::<i32>() {
+        return Ok(GridLine::Number(n));
+    }
+
+    // Named line
+    Ok(GridLine::Named(input.to_string()))
+}
+
+/// Split arguments for grid functions, respecting parentheses.
+fn split_grid_args(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut paren_depth = 0;
+
+    for (i, c) in input.char_indices() {
+        match c {
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            ',' if paren_depth == 0 => {
+                parts.push(input[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if start < input.len() {
+        parts.push(input[start..].trim());
+    }
+
+    parts
 }
 
 /// Parse rotate() transform: rotate(45deg)
@@ -1357,6 +1717,297 @@ fn make_length(value: f64, unit_str: &str) -> Length {
     Length { value, unit }
 }
 
+/// Parse SVG path data string into commands.
+/// Supports M, L, H, V, C, S, Q, T, A, Z commands (absolute and relative).
+fn parse_svg_path_data(input: &str) -> Result<Vec<SvgPathCommand>, ParseError> {
+    let mut commands = Vec::new();
+    let mut chars = input.chars().peekable();
+    let mut current_command: Option<char> = None;
+
+    while chars.peek().is_some() {
+        // Skip whitespace and commas
+        while let Some(&c) = chars.peek() {
+            if c.is_whitespace() || c == ',' {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        if chars.peek().is_none() {
+            break;
+        }
+
+        // Check if next char is a command letter
+        if let Some(&c) = chars.peek() {
+            if c.is_ascii_alphabetic() {
+                current_command = Some(c);
+                chars.next();
+            }
+        }
+
+        let Some(cmd) = current_command else {
+            break;
+        };
+
+        // Parse arguments based on command
+        match cmd {
+            'M' => {
+                let x = parse_svg_number(&mut chars)?;
+                let y = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::MoveTo { x, y });
+                // Subsequent coords are implicit LineTo
+                current_command = Some('L');
+            }
+            'm' => {
+                let dx = parse_svg_number(&mut chars)?;
+                let dy = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::MoveToRel { dx, dy });
+                current_command = Some('l');
+            }
+            'L' => {
+                let x = parse_svg_number(&mut chars)?;
+                let y = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::LineTo { x, y });
+            }
+            'l' => {
+                let dx = parse_svg_number(&mut chars)?;
+                let dy = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::LineToRel { dx, dy });
+            }
+            'H' => {
+                let x = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::HorizontalTo { x });
+            }
+            'h' => {
+                let dx = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::HorizontalToRel { dx });
+            }
+            'V' => {
+                let y = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::VerticalTo { y });
+            }
+            'v' => {
+                let dy = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::VerticalToRel { dy });
+            }
+            'C' => {
+                let x1 = parse_svg_number(&mut chars)?;
+                let y1 = parse_svg_number(&mut chars)?;
+                let x2 = parse_svg_number(&mut chars)?;
+                let y2 = parse_svg_number(&mut chars)?;
+                let x = parse_svg_number(&mut chars)?;
+                let y = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::CubicTo { x1, y1, x2, y2, x, y });
+            }
+            'c' => {
+                let dx1 = parse_svg_number(&mut chars)?;
+                let dy1 = parse_svg_number(&mut chars)?;
+                let dx2 = parse_svg_number(&mut chars)?;
+                let dy2 = parse_svg_number(&mut chars)?;
+                let dx = parse_svg_number(&mut chars)?;
+                let dy = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::CubicToRel { dx1, dy1, dx2, dy2, dx, dy });
+            }
+            'S' => {
+                let x2 = parse_svg_number(&mut chars)?;
+                let y2 = parse_svg_number(&mut chars)?;
+                let x = parse_svg_number(&mut chars)?;
+                let y = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::SmoothCubicTo { x2, y2, x, y });
+            }
+            's' => {
+                let dx2 = parse_svg_number(&mut chars)?;
+                let dy2 = parse_svg_number(&mut chars)?;
+                let dx = parse_svg_number(&mut chars)?;
+                let dy = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::SmoothCubicToRel { dx2, dy2, dx, dy });
+            }
+            'Q' => {
+                let x1 = parse_svg_number(&mut chars)?;
+                let y1 = parse_svg_number(&mut chars)?;
+                let x = parse_svg_number(&mut chars)?;
+                let y = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::QuadTo { x1, y1, x, y });
+            }
+            'q' => {
+                let dx1 = parse_svg_number(&mut chars)?;
+                let dy1 = parse_svg_number(&mut chars)?;
+                let dx = parse_svg_number(&mut chars)?;
+                let dy = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::QuadToRel { dx1, dy1, dx, dy });
+            }
+            'T' => {
+                let x = parse_svg_number(&mut chars)?;
+                let y = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::SmoothQuadTo { x, y });
+            }
+            't' => {
+                let dx = parse_svg_number(&mut chars)?;
+                let dy = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::SmoothQuadToRel { dx, dy });
+            }
+            'A' => {
+                let rx = parse_svg_number(&mut chars)?;
+                let ry = parse_svg_number(&mut chars)?;
+                let x_rotation = parse_svg_number(&mut chars)?;
+                let large_arc = parse_svg_flag(&mut chars)?;
+                let sweep = parse_svg_flag(&mut chars)?;
+                let x = parse_svg_number(&mut chars)?;
+                let y = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::ArcTo { rx, ry, x_rotation, large_arc, sweep, x, y });
+            }
+            'a' => {
+                let rx = parse_svg_number(&mut chars)?;
+                let ry = parse_svg_number(&mut chars)?;
+                let x_rotation = parse_svg_number(&mut chars)?;
+                let large_arc = parse_svg_flag(&mut chars)?;
+                let sweep = parse_svg_flag(&mut chars)?;
+                let dx = parse_svg_number(&mut chars)?;
+                let dy = parse_svg_number(&mut chars)?;
+                commands.push(SvgPathCommand::ArcToRel { rx, ry, x_rotation, large_arc, sweep, dx, dy });
+            }
+            'Z' | 'z' => {
+                commands.push(SvgPathCommand::ClosePath);
+                current_command = None;
+            }
+            _ => {
+                // Unknown command, skip
+                current_command = None;
+            }
+        }
+    }
+
+    Ok(commands)
+}
+
+/// Parse a number from SVG path data.
+fn parse_svg_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<f64, ParseError> {
+    // Skip whitespace and commas
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() || c == ',' {
+            chars.next();
+        } else {
+            break;
+        }
+    }
+
+    let mut num_str = String::new();
+
+    // Optional sign
+    if let Some(&c) = chars.peek() {
+        if c == '-' || c == '+' {
+            num_str.push(c);
+            chars.next();
+        }
+    }
+
+    // Integer part
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            num_str.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+
+    // Decimal part
+    if let Some(&'.') = chars.peek() {
+        num_str.push('.');
+        chars.next();
+        while let Some(&c) = chars.peek() {
+            if c.is_ascii_digit() {
+                num_str.push(c);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Exponent part
+    if let Some(&c) = chars.peek() {
+        if c == 'e' || c == 'E' {
+            num_str.push(c);
+            chars.next();
+            if let Some(&c) = chars.peek() {
+                if c == '-' || c == '+' {
+                    num_str.push(c);
+                    chars.next();
+                }
+            }
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_digit() {
+                    num_str.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    if num_str.is_empty() || num_str == "-" || num_str == "+" {
+        return Err(ParseError::UnexpectedToken {
+            found: "no number".to_string(),
+            expected: "number in SVG path".to_string(),
+            line: 0,
+            column: 0,
+        });
+    }
+
+    num_str.parse::<f64>().map_err(|_| ParseError::UnexpectedToken {
+        found: num_str.clone(),
+        expected: "valid number".to_string(),
+        line: 0,
+        column: 0,
+    })
+}
+
+/// Parse a flag (0 or 1) from SVG path data.
+fn parse_svg_flag(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<bool, ParseError> {
+    // Skip whitespace and commas
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() || c == ',' {
+            chars.next();
+        } else {
+            break;
+        }
+    }
+
+    match chars.next() {
+        Some('0') => Ok(false),
+        Some('1') => Ok(true),
+        other => Err(ParseError::UnexpectedToken {
+            found: other.map(|c| c.to_string()).unwrap_or_else(|| "EOF".to_string()),
+            expected: "0 or 1 for arc flag".to_string(),
+            line: 0,
+            column: 0,
+        }),
+    }
+}
+
+/// Parse SVG viewBox attribute: "minX minY width height".
+fn parse_viewbox(input: &str) -> Option<SvgViewBox> {
+    let parts: Vec<f64> = input
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    if parts.len() == 4 {
+        Some(SvgViewBox {
+            min_x: parts[0],
+            min_y: parts[1],
+            width: parts[2],
+            height: parts[3],
+        })
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1790,6 +2441,238 @@ mod tests {
                 }
             } else {
                 panic!("Expected transform property");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_svg_element() {
+        let input = r#"Svg SearchIcon:
+  viewBox: 0 0 24 24
+  path: M10 2a8 8 0 105.3 14L21 22l1-1-6-5.7A8 8 0 0010 2z
+    fill: #333333
+"#;
+        let doc = parse(input).unwrap();
+        assert_eq!(doc.elements.len(), 1);
+
+        if let Element::Svg(svg) = &doc.elements[0] {
+            assert_eq!(svg.name.as_ref().unwrap().0, "SearchIcon");
+            assert!(svg.view_box.is_some());
+            let vb = svg.view_box.as_ref().unwrap();
+            assert_eq!(vb.min_x, 0.0);
+            assert_eq!(vb.min_y, 0.0);
+            assert_eq!(vb.width, 24.0);
+            assert_eq!(vb.height, 24.0);
+            assert_eq!(svg.paths.len(), 1);
+            assert!(!svg.paths[0].commands.is_empty());
+            // First command should be MoveTo
+            assert!(matches!(svg.paths[0].commands[0], SvgPathCommand::MoveTo { .. }));
+        } else {
+            panic!("Expected Svg element");
+        }
+    }
+
+    #[test]
+    fn test_parse_svg_with_stroke() {
+        let input = r#"Svg Line:
+  viewBox: 0 0 24 24
+  path: M0 12 L24 12
+    stroke: #FF0000
+    stroke-width: 2
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Svg(svg) = &doc.elements[0] {
+            assert_eq!(svg.paths.len(), 1);
+            assert!(svg.paths[0].stroke.is_some());
+            assert_eq!(svg.paths[0].stroke_width, Some(2.0));
+        } else {
+            panic!("Expected Svg element");
+        }
+    }
+
+    #[test]
+    fn test_parse_svg_path_commands() {
+        let input = r#"Svg:
+  path: M0 0 L10 10 H20 V30 C40 40 50 50 60 60 Q70 70 80 80 A5 5 0 1 1 90 90 Z
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Svg(svg) = &doc.elements[0] {
+            let cmds = &svg.paths[0].commands;
+            assert!(cmds.len() >= 7);
+            assert!(matches!(cmds[0], SvgPathCommand::MoveTo { x: 0.0, y: 0.0 }));
+            assert!(matches!(cmds[1], SvgPathCommand::LineTo { x: 10.0, y: 10.0 }));
+            assert!(matches!(cmds[2], SvgPathCommand::HorizontalTo { x: 20.0 }));
+            assert!(matches!(cmds[3], SvgPathCommand::VerticalTo { y: 30.0 }));
+            assert!(matches!(cmds[4], SvgPathCommand::CubicTo { .. }));
+            assert!(matches!(cmds[5], SvgPathCommand::QuadTo { .. }));
+            assert!(matches!(cmds[6], SvgPathCommand::ArcTo { .. }));
+            assert!(matches!(cmds[cmds.len() - 1], SvgPathCommand::ClosePath));
+        } else {
+            panic!("Expected Svg element");
+        }
+    }
+
+    // Grid layout parsing tests
+
+    #[test]
+    fn test_parse_grid_tracks_simple() {
+        let tracks = parse_grid_tracks("[1fr, 2fr, auto]").unwrap();
+        assert_eq!(tracks.len(), 3);
+        assert!(matches!(tracks[0], GridTrackSize::Fraction(f) if (f - 1.0).abs() < 0.001));
+        assert!(matches!(tracks[1], GridTrackSize::Fraction(f) if (f - 2.0).abs() < 0.001));
+        assert!(matches!(tracks[2], GridTrackSize::Auto));
+    }
+
+    #[test]
+    fn test_parse_grid_tracks_fixed() {
+        let tracks = parse_grid_tracks("[100px, 200px, 50px]").unwrap();
+        assert_eq!(tracks.len(), 3);
+        assert!(matches!(tracks[0], GridTrackSize::Fixed(f) if (f - 100.0).abs() < 0.001));
+        assert!(matches!(tracks[1], GridTrackSize::Fixed(f) if (f - 200.0).abs() < 0.001));
+        assert!(matches!(tracks[2], GridTrackSize::Fixed(f) if (f - 50.0).abs() < 0.001));
+    }
+
+    #[test]
+    fn test_parse_grid_tracks_minmax() {
+        let tracks = parse_grid_tracks("[minmax(100px, 1fr)]").unwrap();
+        assert_eq!(tracks.len(), 1);
+        if let GridTrackSize::MinMax { min, max } = &tracks[0] {
+            assert!(matches!(**min, GridTrackSize::Fixed(f) if (f - 100.0).abs() < 0.001));
+            assert!(matches!(**max, GridTrackSize::Fraction(f) if (f - 1.0).abs() < 0.001));
+        } else {
+            panic!("Expected MinMax track");
+        }
+    }
+
+    #[test]
+    fn test_parse_grid_repeat() {
+        let tracks = parse_grid_repeat("repeat(3, 1fr)").unwrap();
+        assert_eq!(tracks.len(), 1);
+        if let GridTrackSize::Repeat { count, sizes } = &tracks[0] {
+            assert!(matches!(count, RepeatCount::Count(3)));
+            assert_eq!(sizes.len(), 1);
+            assert!(matches!(sizes[0], GridTrackSize::Fraction(f) if (f - 1.0).abs() < 0.001));
+        } else {
+            panic!("Expected Repeat track");
+        }
+    }
+
+    #[test]
+    fn test_parse_grid_repeat_auto_fill() {
+        let tracks = parse_grid_repeat("repeat(auto-fill, minmax(200px, 1fr))").unwrap();
+        assert_eq!(tracks.len(), 1);
+        if let GridTrackSize::Repeat { count, sizes } = &tracks[0] {
+            assert!(matches!(count, RepeatCount::AutoFill));
+            assert_eq!(sizes.len(), 1);
+        } else {
+            panic!("Expected Repeat track with auto-fill");
+        }
+    }
+
+    #[test]
+    fn test_parse_grid_line_single() {
+        let line = parse_grid_line_value("1").unwrap();
+        assert!(matches!(line.start, GridLine::Number(1)));
+        assert!(line.end.is_none());
+    }
+
+    #[test]
+    fn test_parse_grid_line_range() {
+        let line = parse_grid_line_value("1 / 3").unwrap();
+        assert!(matches!(line.start, GridLine::Number(1)));
+        assert!(matches!(line.end, Some(GridLine::Number(3))));
+    }
+
+    #[test]
+    fn test_parse_grid_line_negative() {
+        let line = parse_grid_line_value("1 / -1").unwrap();
+        assert!(matches!(line.start, GridLine::Number(1)));
+        assert!(matches!(line.end, Some(GridLine::Number(-1))));
+    }
+
+    #[test]
+    fn test_parse_grid_line_span() {
+        let line = parse_grid_line_value("span 2").unwrap();
+        assert!(matches!(line.start, GridLine::Span(2)));
+        assert!(line.end.is_none());
+    }
+
+    #[test]
+    fn test_parse_grid_frame() {
+        let input = r#"Frame Grid:
+  layout: grid
+  grid-template-columns: [1fr, 2fr, 1fr]
+  grid-template-rows: [auto, auto]
+  gap: 16px
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            assert_eq!(frame.name.as_ref().unwrap().0, "Grid");
+
+            // Find layout property
+            let layout_prop = frame.properties.iter().find(|p| p.name == "layout").unwrap();
+            assert!(matches!(layout_prop.value, PropertyValue::Enum(ref s) if s == "grid"));
+
+            // Find columns property
+            let cols_prop = frame.properties.iter().find(|p| p.name == "grid-template-columns").unwrap();
+            if let PropertyValue::GridTracks(tracks) = &cols_prop.value {
+                assert_eq!(tracks.len(), 3);
+            } else {
+                panic!("Expected GridTracks property");
+            }
+
+            // Find rows property
+            let rows_prop = frame.properties.iter().find(|p| p.name == "grid-template-rows").unwrap();
+            if let PropertyValue::GridTracks(tracks) = &rows_prop.value {
+                assert_eq!(tracks.len(), 2);
+            } else {
+                panic!("Expected GridTracks property");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_grid_child_placement() {
+        let input = r#"Frame Grid:
+  layout: grid
+  grid-template-columns: [1fr, 1fr]
+  Frame Item:
+    grid-column: 1 / 3
+    grid-row: 1
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(grid) = &doc.elements[0] {
+            assert_eq!(grid.children.len(), 1);
+            if let Element::Frame(item) = &grid.children[0] {
+                // Find grid-column property
+                let col_prop = item.properties.iter().find(|p| p.name == "grid-column").unwrap();
+                if let PropertyValue::GridLine(line) = &col_prop.value {
+                    assert!(matches!(line.start, GridLine::Number(1)));
+                    assert!(matches!(line.end, Some(GridLine::Number(3))));
+                } else {
+                    panic!("Expected GridLine property");
+                }
+
+                // Find grid-row property
+                let row_prop = item.properties.iter().find(|p| p.name == "grid-row").unwrap();
+                // Single number should be parsed as Number
+                if let PropertyValue::Number(n) = row_prop.value {
+                    assert!((n - 1.0).abs() < 0.001);
+                } else if let PropertyValue::GridLine(line) = &row_prop.value {
+                    assert!(matches!(line.start, GridLine::Number(1)));
+                } else {
+                    panic!("Expected Number or GridLine property, got {:?}", row_prop.value);
+                }
+            } else {
+                panic!("Expected child Frame");
             }
         } else {
             panic!("Expected Frame element");

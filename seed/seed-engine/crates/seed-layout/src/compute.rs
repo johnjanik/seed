@@ -10,6 +10,7 @@ use seed_core::{
 use seed_constraint::{ConstraintSystem, Solution};
 
 use crate::auto_layout::{AutoLayout, Alignment, ChildSize, Padding};
+use crate::grid::{GridLayout, GridPlacement, GridChildSize, TrackSize, ItemAlignment};
 use crate::text::{measure_text, TextStyle};
 use crate::tree::{Bounds, LayoutNode, LayoutNodeId, LayoutTree};
 
@@ -94,6 +95,7 @@ fn layout_element(
     match element {
         Element::Frame(frame) => layout_frame(ctx, frame, parent_id, solution),
         Element::Text(text) => layout_text(ctx, text, parent_id, solution),
+        Element::Svg(svg) => layout_svg(ctx, svg, parent_id, solution),
         Element::Part(_) => {
             // 3D parts don't have 2D layout
             let node_id = ctx.tree.next_id();
@@ -169,9 +171,15 @@ fn layout_frame(
         ctx.tree.add_root(node)
     };
 
+    // Get grid layout settings from properties
+    let grid_layout = get_grid_layout_from_properties(&frame.properties);
+
     // Layout children
     if !frame.children.is_empty() {
-        if let Some(ref auto) = auto_layout {
+        if let Some(ref grid) = grid_layout {
+            // Use grid layout for children
+            layout_children_grid(ctx, node_id, &frame.children, grid, solution)?;
+        } else if let Some(ref auto) = auto_layout {
             // Use auto-layout for children
             layout_children_auto(ctx, node_id, &frame.children, auto, solution)?;
         } else {
@@ -224,6 +232,48 @@ fn layout_text(
     }
     if bounds.height == 0.0 {
         bounds.height = metrics.height;
+    }
+
+    let node_id = ctx.tree.next_id();
+    let element_id = ElementId(node_id.0);
+
+    let node = LayoutNode::new(node_id)
+        .with_element_id(element_id)
+        .with_name(&name)
+        .with_bounds(bounds);
+
+    ctx.element_names.insert(name.clone(), element_id);
+
+    if let Some(pid) = parent_id {
+        ctx.tree.add_child(pid, node);
+    } else {
+        ctx.tree.add_root(node);
+    }
+
+    Ok(node_id)
+}
+
+/// Layout an SVG element.
+fn layout_svg(
+    ctx: &mut LayoutContext,
+    svg: &seed_core::ast::SvgElement,
+    parent_id: Option<LayoutNodeId>,
+    solution: &Solution,
+) -> Result<LayoutNodeId, LayoutError> {
+    let name = svg.name
+        .as_ref()
+        .map(|id| id.0.clone())
+        .unwrap_or_else(|| ctx.generate_name("svg"));
+
+    // Get bounds from constraint solution or viewBox/properties
+    let mut bounds = get_bounds_from_solution(ctx, &name, solution, parent_id);
+
+    // If dimensions not set, try to get from viewBox or default to 24x24 (common icon size)
+    if bounds.width == 0.0 {
+        bounds.width = svg.view_box.map(|vb| vb.width).unwrap_or(24.0);
+    }
+    if bounds.height == 0.0 {
+        bounds.height = svg.view_box.map(|vb| vb.height).unwrap_or(24.0);
     }
 
     let node_id = ctx.tree.next_id();
@@ -318,6 +368,262 @@ fn apply_auto_layout_properties(auto: &mut AutoLayout, properties: &[Property]) 
             "stretch" => Alignment::Stretch,
             _ => Alignment::Start,
         };
+    }
+}
+
+/// Get grid layout configuration from properties.
+fn get_grid_layout_from_properties(properties: &[Property]) -> Option<GridLayout> {
+    let layout_mode = get_string_property(properties, "layout");
+
+    if layout_mode.as_deref() != Some("grid") {
+        return None;
+    }
+
+    let mut grid = GridLayout::default();
+
+    // Parse columns: grid-template-columns or columns
+    if let Some(columns) = get_grid_tracks_property(properties, "grid-template-columns")
+        .or_else(|| get_grid_tracks_property(properties, "columns"))
+    {
+        grid.columns = columns;
+    }
+
+    // Parse rows: grid-template-rows or rows
+    if let Some(rows) = get_grid_tracks_property(properties, "grid-template-rows")
+        .or_else(|| get_grid_tracks_property(properties, "rows"))
+    {
+        grid.rows = rows;
+    }
+
+    // Parse gap
+    if let Some(gap) = get_length_property(properties, "gap") {
+        grid.column_gap = gap;
+        grid.row_gap = gap;
+    }
+    if let Some(column_gap) = get_length_property(properties, "column-gap") {
+        grid.column_gap = column_gap;
+    }
+    if let Some(row_gap) = get_length_property(properties, "row-gap") {
+        grid.row_gap = row_gap;
+    }
+
+    // Parse item alignment
+    if let Some(justify) = get_string_property(properties, "justify-items") {
+        grid.justify_items = parse_item_alignment(&justify);
+    }
+    if let Some(align) = get_string_property(properties, "align-items") {
+        grid.align_items = parse_item_alignment(&align);
+    }
+
+    Some(grid)
+}
+
+/// Parse item alignment string.
+fn parse_item_alignment(s: &str) -> ItemAlignment {
+    match s {
+        "start" => ItemAlignment::Start,
+        "center" => ItemAlignment::Center,
+        "end" => ItemAlignment::End,
+        "stretch" => ItemAlignment::Stretch,
+        _ => ItemAlignment::Start,
+    }
+}
+
+/// Get grid tracks from a property value.
+fn get_grid_tracks_property(properties: &[Property], name: &str) -> Option<Vec<TrackSize>> {
+    properties.iter().find(|p| p.name == name).and_then(|p| {
+        match &p.value {
+            PropertyValue::GridTracks(tracks) => {
+                Some(tracks.iter().map(convert_grid_track_size).collect())
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Convert AST GridTrackSize to layout GridTrackSize.
+fn convert_grid_track_size(ast_track: &seed_core::ast::GridTrackSize) -> TrackSize {
+    use seed_core::ast::GridTrackSize as AstTrack;
+    match ast_track {
+        AstTrack::Fixed(px) => TrackSize::Fixed(*px),
+        AstTrack::Fraction(fr) => TrackSize::Fraction(*fr),
+        AstTrack::Auto => TrackSize::Auto,
+        AstTrack::MinContent => TrackSize::MinContent,
+        AstTrack::MaxContent => TrackSize::MaxContent,
+        AstTrack::MinMax { min, max } => {
+            // Simplify minmax to use numeric bounds
+            let min_val = track_to_min_value(min);
+            let max_val = track_to_max_value(max);
+            TrackSize::MinMax { min: min_val, max: max_val }
+        }
+        AstTrack::Repeat { count: _, sizes } => {
+            // For repeat, we just return the first size (simplified)
+            // A proper implementation would expand the repeat
+            if let Some(first) = sizes.first() {
+                convert_grid_track_size(first)
+            } else {
+                TrackSize::Auto
+            }
+        }
+    }
+}
+
+/// Get minimum value from a track size.
+fn track_to_min_value(track: &seed_core::ast::GridTrackSize) -> f64 {
+    use seed_core::ast::GridTrackSize as AstTrack;
+    match track {
+        AstTrack::Fixed(px) => *px,
+        AstTrack::Fraction(_) => 0.0,
+        AstTrack::Auto | AstTrack::MinContent | AstTrack::MaxContent => 0.0,
+        AstTrack::MinMax { min, .. } => track_to_min_value(min),
+        AstTrack::Repeat { .. } => 0.0,
+    }
+}
+
+/// Get maximum value from a track size.
+fn track_to_max_value(track: &seed_core::ast::GridTrackSize) -> f64 {
+    use seed_core::ast::GridTrackSize as AstTrack;
+    match track {
+        AstTrack::Fixed(px) => *px,
+        AstTrack::Fraction(_) => f64::MAX,
+        AstTrack::Auto | AstTrack::MinContent | AstTrack::MaxContent => f64::MAX,
+        AstTrack::MinMax { max, .. } => track_to_max_value(max),
+        AstTrack::Repeat { .. } => f64::MAX,
+    }
+}
+
+/// Layout children using grid layout.
+fn layout_children_grid(
+    ctx: &mut LayoutContext,
+    parent_id: LayoutNodeId,
+    children: &[Element],
+    grid_layout: &GridLayout,
+    solution: &Solution,
+) -> Result<(), LayoutError> {
+    // First, layout all children to get their sizes
+    let mut child_ids = Vec::new();
+    let mut child_data: Vec<(GridChildSize, GridPlacement)> = Vec::new();
+
+    for (i, child) in children.iter().enumerate() {
+        let child_id = layout_element(ctx, child, Some(parent_id), solution)?;
+        child_ids.push(child_id);
+
+        let child_node = ctx.tree.get(child_id).unwrap();
+
+        // Get child size
+        let child_size = GridChildSize {
+            width: if child_node.bounds.width > 0.0 {
+                Some(child_node.bounds.width)
+            } else {
+                None
+            },
+            height: if child_node.bounds.height > 0.0 {
+                Some(child_node.bounds.height)
+            } else {
+                None
+            },
+            min_width: 0.0,
+            min_height: 0.0,
+        };
+
+        // Get placement from child properties
+        let placement = get_grid_placement_from_child(child, i);
+
+        child_data.push((child_size, placement));
+    }
+
+    // Get parent bounds
+    let parent_bounds = ctx.tree.get(parent_id).unwrap().bounds;
+
+    // Compute layout
+    let child_bounds = grid_layout.layout(parent_bounds, &child_data);
+
+    // Apply computed bounds to children
+    for (child_id, bounds) in child_ids.into_iter().zip(child_bounds.into_iter()) {
+        if let Some(child) = ctx.tree.get_mut(child_id) {
+            child.bounds = bounds;
+        }
+    }
+
+    Ok(())
+}
+
+/// Get grid placement from a child element's properties.
+fn get_grid_placement_from_child(child: &Element, default_index: usize) -> GridPlacement {
+    let properties = match child {
+        Element::Frame(f) => &f.properties,
+        Element::Text(t) => &t.properties,
+        Element::Svg(s) => &s.properties,
+        _ => return auto_placement(default_index),
+    };
+
+    let mut placement = GridPlacement::default();
+
+    // Parse grid-column: "1 / 3" or "1"
+    if let Some(col) = get_grid_line_property(properties, "grid-column") {
+        placement.column_start = col.0;
+        placement.column_end = col.1;
+    }
+
+    // Parse grid-row: "1 / 3" or "1"
+    if let Some(row) = get_grid_line_property(properties, "grid-row") {
+        placement.row_start = row.0;
+        placement.row_end = row.1;
+    }
+
+    // If no explicit placement, use auto-flow (row-by-row)
+    if placement.column_start.is_none() && placement.row_start.is_none() {
+        return auto_placement(default_index);
+    }
+
+    placement
+}
+
+/// Get grid line placement from property.
+fn get_grid_line_property(properties: &[Property], name: &str) -> Option<(Option<usize>, Option<usize>)> {
+    properties.iter().find(|p| p.name == name).and_then(|p| {
+        match &p.value {
+            PropertyValue::GridLine(line) => {
+                let start = convert_grid_line(&line.start);
+                let end = line.end.as_ref().map(convert_grid_line).flatten();
+                Some((start, end))
+            }
+            PropertyValue::Number(n) => {
+                // Single number means just the start position
+                let n = *n as i32;
+                if n > 0 {
+                    Some((Some(n as usize), Some(n as usize + 1)))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Convert AST GridLine to a line number.
+fn convert_grid_line(line: &seed_core::ast::GridLine) -> Option<usize> {
+    use seed_core::ast::GridLine;
+    match line {
+        GridLine::Number(n) if *n > 0 => Some(*n as usize),
+        GridLine::Number(_) => None, // Negative numbers would need special handling
+        GridLine::Span(n) => Some(*n as usize), // Span is relative, handle specially
+        GridLine::Named(_) => None, // Named lines not supported yet
+        GridLine::Auto => None,
+    }
+}
+
+/// Create auto-placement for the given index (simple row-major order).
+fn auto_placement(index: usize) -> GridPlacement {
+    // Default to row-major auto-placement
+    // For now, just use sequential placement (will be improved with actual grid tracking)
+    GridPlacement {
+        column_start: Some(index + 1),
+        column_end: Some(index + 2),
+        row_start: Some(1),
+        row_end: Some(2),
+        ..Default::default()
     }
 }
 
@@ -835,5 +1141,197 @@ mod tests {
             let branch = tree.get(branch_id).unwrap();
             assert_eq!(branch.children.len(), 2, "Each branch should have 2 leaves");
         }
+    }
+
+    // Grid layout tests
+
+    fn make_grid_frame(name: &str, width: f64, height: f64, columns: Vec<seed_core::ast::GridTrackSize>, rows: Vec<seed_core::ast::GridTrackSize>, children: Vec<Element>) -> Element {
+        Element::Frame(FrameElement {
+            name: Some(Identifier(name.to_string())),
+            properties: vec![
+                Property {
+                    name: "layout".to_string(),
+                    value: PropertyValue::Enum("grid".to_string()),
+                    span: Span::default(),
+                },
+                Property {
+                    name: "grid-template-columns".to_string(),
+                    value: PropertyValue::GridTracks(columns),
+                    span: Span::default(),
+                },
+                Property {
+                    name: "grid-template-rows".to_string(),
+                    value: PropertyValue::GridTracks(rows),
+                    span: Span::default(),
+                },
+            ],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(width),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(height),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children,
+            span: Span::default(),
+        })
+    }
+
+    #[test]
+    fn test_compute_grid_basic() {
+        use seed_core::ast::GridTrackSize;
+
+        let child1 = make_frame_element("child1", 0.0, 0.0); // Let grid determine size
+        let child2 = make_frame_element("child2", 0.0, 0.0);
+
+        let grid = make_grid_frame(
+            "grid",
+            200.0,
+            100.0,
+            vec![GridTrackSize::Fixed(100.0), GridTrackSize::Fixed(100.0)],
+            vec![GridTrackSize::Fixed(100.0)],
+            vec![child1, child2],
+        );
+
+        let mut doc = make_empty_doc();
+        doc.elements.push(grid);
+
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+
+        let root = tree.get(tree.roots()[0]).unwrap();
+        assert_eq!(root.children.len(), 2);
+
+        // First child should be in first column
+        let c1 = tree.get(root.children[0]).unwrap();
+        assert!((c1.bounds.x - 0.0).abs() < 1.0, "Child 1 x should be 0, got {}", c1.bounds.x);
+
+        // Second child should be in second column
+        let c2 = tree.get(root.children[1]).unwrap();
+        assert!((c2.bounds.x - 100.0).abs() < 1.0, "Child 2 x should be 100, got {}", c2.bounds.x);
+    }
+
+    #[test]
+    fn test_compute_grid_fractional() {
+        use seed_core::ast::GridTrackSize;
+
+        let child1 = make_frame_element("child1", 0.0, 0.0);
+        let child2 = make_frame_element("child2", 0.0, 0.0);
+        let child3 = make_frame_element("child3", 0.0, 0.0);
+
+        let grid = make_grid_frame(
+            "grid",
+            300.0,
+            100.0,
+            vec![
+                GridTrackSize::Fraction(1.0),
+                GridTrackSize::Fraction(2.0),
+                GridTrackSize::Fraction(1.0),
+            ],
+            vec![GridTrackSize::Fixed(100.0)],
+            vec![child1, child2, child3],
+        );
+
+        let mut doc = make_empty_doc();
+        doc.elements.push(grid);
+
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+
+        let root = tree.get(tree.roots()[0]).unwrap();
+        assert_eq!(root.children.len(), 3);
+
+        // 1fr : 2fr : 1fr = 75px : 150px : 75px
+        let c1 = tree.get(root.children[0]).unwrap();
+        let c2 = tree.get(root.children[1]).unwrap();
+        let c3 = tree.get(root.children[2]).unwrap();
+
+        assert!((c1.bounds.width - 75.0).abs() < 1.0, "Child 1 width should be 75, got {}", c1.bounds.width);
+        assert!((c2.bounds.width - 150.0).abs() < 1.0, "Child 2 width should be 150, got {}", c2.bounds.width);
+        assert!((c3.bounds.width - 75.0).abs() < 1.0, "Child 3 width should be 75, got {}", c3.bounds.width);
+
+        // Check x positions
+        assert!((c1.bounds.x - 0.0).abs() < 1.0);
+        assert!((c2.bounds.x - 75.0).abs() < 1.0);
+        assert!((c3.bounds.x - 225.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_compute_grid_with_gap() {
+        use seed_core::ast::GridTrackSize;
+
+        let child1 = make_frame_element("child1", 0.0, 0.0);
+        let child2 = make_frame_element("child2", 0.0, 0.0);
+
+        // Create a grid with gap
+        let grid = Element::Frame(FrameElement {
+            name: Some(Identifier("grid".to_string())),
+            properties: vec![
+                Property {
+                    name: "layout".to_string(),
+                    value: PropertyValue::Enum("grid".to_string()),
+                    span: Span::default(),
+                },
+                Property {
+                    name: "grid-template-columns".to_string(),
+                    value: PropertyValue::GridTracks(vec![
+                        GridTrackSize::Fixed(90.0),
+                        GridTrackSize::Fixed(90.0),
+                    ]),
+                    span: Span::default(),
+                },
+                Property {
+                    name: "gap".to_string(),
+                    value: PropertyValue::Length(seed_core::types::Length { value: 20.0, unit: seed_core::types::LengthUnit::Px }),
+                    span: Span::default(),
+                },
+            ],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(200.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(100.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![child1, child2],
+            span: Span::default(),
+        });
+
+        let mut doc = make_empty_doc();
+        doc.elements.push(grid);
+
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+
+        let root = tree.get(tree.roots()[0]).unwrap();
+        assert_eq!(root.children.len(), 2);
+
+        let c1 = tree.get(root.children[0]).unwrap();
+        let c2 = tree.get(root.children[1]).unwrap();
+
+        assert!((c1.bounds.x - 0.0).abs() < 1.0);
+        assert!((c2.bounds.x - 110.0).abs() < 1.0, "Child 2 x should be 110 (90 + 20 gap), got {}", c2.bounds.x);
     }
 }
