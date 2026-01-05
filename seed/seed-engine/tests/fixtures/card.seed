@@ -1,0 +1,37 @@
+Frame Card:
+  fill: #FFFFFF
+  cornerRadius: 12px
+  shadow: 0 4px 6px rgba(0,0,0,0.1)
+  constraints:
+    - width = 320px
+    - height = 200px
+
+  Frame Header:
+    fill: #F3F4F6
+    constraints:
+      - left align Parent
+      - right align Parent
+      - top align Parent
+      - height = 48px
+
+    Text Title:
+      content: "Card Title"
+      fontSize: 18px
+      fontWeight: bold
+      constraints:
+        - left align Parent, gap: 16px
+        - center-y align Parent
+
+  Frame Content:
+    constraints:
+      - left align Parent
+      - right align Parent
+      - below Header
+      - bottom align Parent
+
+    Text Body:
+      content: "Card content goes here."
+      fontSize: 14px
+      constraints:
+        - left align Parent, gap: 16px
+        - top align Parent, gap: 16px

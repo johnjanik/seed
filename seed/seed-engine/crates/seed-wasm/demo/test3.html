@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WASM Test 3 - Minimal</title>
+</head>
+<body>
+    <h1>WASM Minimal Load Test</h1>
+    <div id="output">Starting...</div>
+    <button onclick="alert('Button works!')">Click Me</button>
+    <button id="parse-btn">Parse</button>
+    <button id="render-btn">Render</button>
+    <br><br>
+    <canvas id="canvas" style="border:1px solid black; display:block; margin-top:10px;"></canvas>
+
+    <script type="module">
+        const output = document.getElementById('output');
+
+        output.textContent = 'Step 1: JS running';
+        console.log('Step 1: JS running');
+
+        output.textContent = 'Step 2: About to import module...';
+        console.log('Step 2: About to import module...');
+
+        const module = await import('../pkg/seed_wasm.js');
+
+        output.textContent = 'Step 3: Module imported, about to init...';
+        console.log('Step 3: Module imported');
+        console.log('Module keys:', Object.keys(module));
+
+        await module.default();
+
+        output.textContent = 'Step 4: WASM initialized!';
+        console.log('Step 4: WASM initialized');
+
+        output.textContent = 'Step 5: Creating engine...';
+        const engine = new module.SeedEngine();
+
+        output.textContent = 'Step 6: Engine created. Getting version...';
+        console.log('Step 6: Engine created');
+
+        const version = module.getVersion();
+        output.textContent = 'Step 7: Version = ' + version + '. Click Parse or Render!';
+        console.log('Step 7: Version =', version);
+
+        // Add button handlers AFTER engine is ready
+        document.getElementById('parse-btn').addEventListener('click', () => {
+            output.textContent = 'Parsing...';
+            try {
+                engine.parse('Frame:\n  width: 200px\n  height: 100px\n  fill: #4a90d9');
+                output.textContent = 'Parsed successfully!';
+            } catch(e) {
+                output.textContent = 'Parse error: ' + e.message;
+            }
+        });
+
+        document.getElementById('render-btn').addEventListener('click', () => {
+            output.textContent = 'Rendering...';
+            try {
+                engine.parse('Frame:\n  width: 200px\n  height: 100px\n  fill: #4a90d9');
+                engine.layout();
+                const png = engine.exportPng();
+                output.textContent = 'PNG size: ' + png.length + ' bytes. Drawing...';
+
+                const blob = new Blob([png], { type: 'image/png' });
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                const canvas = document.getElementById('canvas');
+                img.onload = () => {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    canvas.getContext('2d').drawImage(img, 0, 0);
+                    URL.revokeObjectURL(url);
+                    output.textContent = 'Rendered! ' + img.width + 'x' + img.height;
+                };
+                img.src = url;
+            } catch(e) {
+                output.textContent = 'Render error: ' + e.message;
+            }
+        });
+    </script>
+</body>
+</html>

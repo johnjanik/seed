@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WASM Test</title>
+</head>
+<body>
+    <h1>WASM Minimal Test</h1>
+    <div id="output">Loading...</div>
+    <button id="test-btn">Test Button</button>
+
+    <script type="module">
+        const output = document.getElementById('output');
+
+        // Test 1: Basic JS works
+        output.textContent = 'JS loaded. ';
+        console.log('Step 1: JS loaded');
+
+        // Test 2: Button works
+        document.getElementById('test-btn').addEventListener('click', () => {
+            console.log('Button clicked!');
+            alert('Button works!');
+        });
+        console.log('Step 2: Event listener attached');
+
+        // Test 3: Import WASM
+        try {
+            console.log('Step 3: Attempting WASM import...');
+            const module = await import('../pkg/seed_wasm.js');
+            console.log('Step 4: Module imported:', Object.keys(module));
+            output.textContent += 'Module imported. ';
+
+            // Test 4: Initialize WASM
+            console.log('Step 5: Calling init()...');
+            await module.default();
+            console.log('Step 6: WASM initialized');
+            output.textContent += 'WASM init done. ';
+
+            // Test 5: Create engine
+            console.log('Step 7: Creating SeedEngine...');
+            const engine = new module.SeedEngine();
+            console.log('Step 8: Engine created');
+            output.textContent += 'Engine created. ';
+
+            // Test 6: Get version
+            console.log('Step 9: Getting version...');
+            const version = module.getVersion();
+            console.log('Step 10: Version:', version);
+            output.textContent += 'Version: ' + version;
+
+        } catch (e) {
+            console.error('Error:', e);
+            output.textContent = 'ERROR: ' + e.message;
+        }
+    </script>
+</body>
+</html>

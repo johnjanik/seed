@@ -71,34 +71,30 @@ The Seed Rendering Engine uses:
 - **Components**: Reusable, parameterized design patterns
 - **Profiles**: Seed/2D (screens) and Seed/3D (manufacturing)
 
-## Current Work In Progress (2026-01-04)
+## Current Work In Progress (2026-01-05)
 
 ### WASM Demo Status
-The WASM demo at `seed-engine/crates/seed-wasm/demo/index.html` is partially working:
-- **Working**: Simple single-frame rendering (e.g., "Simple Frame" example with rounded blue rectangle)
-- **Broken**: Nested frames and gradients cause "Maximum call stack size exceeded" error
+The WASM demo at `seed-engine/crates/seed-wasm/demo/index.html`:
+- **Working**: Simple single-frame rendering
+- **Working**: Nested frames (fixed 2026-01-05)
+- **Untested**: Gradients - may have separate issues
 
 ### Recent Fixes Applied
 1. **Parser syntax**: Changed from `Frame` to `Frame:` (with colon) - parser requires colon
 2. **Properties to constraints**: Modified `seed-constraint/src/solver.rs` to convert layout properties (`width`, `height`, `x`, `y`) to implicit constraints
 3. **Name matching**: Fixed element naming in constraint system to match layout system (`frame_1` not `_frame_0`)
 4. **CRC32 table**: Fixed 2 typos in PNG CRC32 lookup table at indices 111 and 245 in `seed-export/src/png.rs`
-
-### Next Steps - Stack Overflow Fix
-The "Maximum call stack size exceeded" error occurs when rendering nested frames or complex examples. Likely causes to investigate:
-1. **Recursive layout**: Check `seed-layout/src/compute.rs` for infinite recursion in `layout_frame` or `layout_element`
-2. **Constraint solver**: Check if nested frames create circular constraints
-3. **PNG rendering**: Check `seed-render-2d/` for recursion issues when rendering children
-
-### Key Files to Examine
-- `seed-engine/crates/seed-layout/src/compute.rs` - Layout computation, likely source of recursion
-- `seed-engine/crates/seed-constraint/src/solver.rs` - Constraint system, processes nested elements
-- `seed-engine/crates/seed-wasm/demo/index.html` - Demo page with examples
+5. **Nested loop bug (2026-01-05)**: Fixed O(n²) nested loop in `scene.rs:156-159` that caused stack overflow - was iterating all AST children for each layout child instead of zipping them
+6. **Canvas child ID bug (2026-01-05)**: Fixed `canvas.rs:129-131` to use actual layout tree child IDs instead of computing incorrect IDs
 
 ### How to Test
 ```bash
 cd seed-engine/crates/seed-wasm
 wasm-pack build --target web
 # Then open demo/index.html via HTTP server (python -m http.server 8081)
-# Try "Simple Frame" (works) vs "Nested Frames" (stack overflow)
 ```
+
+### Next Steps
+1. Test gradient rendering in WASM demo
+2. Add more comprehensive unit tests for nested elements
+3. Clean up dead code warnings

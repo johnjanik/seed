@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seed Engine Demo</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto 1fr auto;
+            gap: 16px;
+            padding: 16px;
+            height: 100vh;
+        }
+        header {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0;
+        }
+        h1 {
+            font-size: 1.5rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .status {
+            font-size: 0.875rem;
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: #2d2d44;
+        }
+        .status.ready { background: #1e3a2f; color: #4ade80; }
+        .status.error { background: #3a1e1e; color: #f87171; }
+        .panel {
+            background: #16162a;
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-header {
+            padding: 12px 16px;
+            background: #1e1e3a;
+            font-weight: 500;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #888;
+        }
+        #editor {
+            flex: 1;
+            width: 100%;
+            padding: 16px;
+            background: transparent;
+            border: none;
+            color: #e0e0e0;
+            font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            resize: none;
+            outline: none;
+        }
+        .preview-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            background: #fff;
+            overflow: auto;
+        }
+        #canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .toolbar {
+            grid-column: 1 / -1;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-secondary { background: #2d2d44; color: #ccc; }
+        .btn-secondary:hover { background: #3d3d54; }
+        .examples select {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 8px;
+            background: #2d2d44;
+            color: #ccc;
+            font-size: 0.875rem;
+            cursor: pointer;
+        }
+        .examples { margin-left: auto; }
+        .error-message {
+            padding: 16px;
+            background: #3a1e1e;
+            color: #f87171;
+            font-family: monospace;
+            font-size: 0.875rem;
+            display: none;
+        }
+        .info-bar {
+            padding: 8px 16px;
+            background: #1e1e3a;
+            font-size: 0.75rem;
+            color: #666;
+            display: flex;
+            gap: 16px;
+        }
+        @media (max-width: 768px) {
+            .container { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Seed Engine</h1>
+            <span id="status" class="status">Loading...</span>
+        </header>
+        <div class="panel">
+            <div class="panel-header">Source</div>
+            <textarea id="editor" spellcheck="false">Frame:
+  width: 200px
+  height: 100px
+  fill: #4a90d9
+  corner-radius: 8px</textarea>
+        </div>
+        <div class="panel">
+            <div class="panel-header">Preview</div>
+            <div class="preview-container">
+                <canvas id="canvas"></canvas>
+            </div>
+            <div id="error-container" class="error-message"></div>
+            <div class="info-bar">
+                <span id="info">-</span>
+            </div>
+        </div>
+        <div class="toolbar">
+            <button class="btn-primary" id="btn-render">Render</button>
+            <button class="btn-secondary" id="btn-svg">Export SVG</button>
+            <button class="btn-secondary" id="btn-png">Export PNG</button>
+            <div class="examples">
+                <select id="examples">
+                    <option value="">Load Example...</option>
+                    <option value="simple">Simple Frame</option>
+                    <option value="nested">Nested Frames</option>
+                    <option value="gradient">Gradients</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        const status = document.getElementById('status');
+        const editor = document.getElementById('editor');
+        const canvas = document.getElementById('canvas');
+        const errorContainer = document.getElementById('error-container');
+        const info = document.getElementById('info');
+
+        status.textContent = 'JS loaded...';
+        console.log('Step 1: JS loaded');
+
+        let engine = null;
+
+        const EXAMPLES = {
+            simple: `Frame:
+  width: 200px
+  height: 100px
+  fill: #4a90d9
+  corner-radius: 8px`,
+            nested: `Frame:
+  width: 300px
+  height: 200px
+  fill: #2d2d44
+  corner-radius: 12px
+
+  Frame:
+    width: 120px
+    height: 80px
+    x: 20px
+    y: 20px
+    fill: #667eea
+
+  Frame:
+    width: 120px
+    height: 80px
+    x: 160px
+    y: 100px
+    fill: #764ba2
+    corner-radius: 40px`,
+            gradient: `Frame:
+  width: 300px
+  height: 200px
+  fill: linear-gradient(135deg, #667eea 0%, #764ba2 100%)
+  corner-radius: 16px`
+        };
+
+        // Event listeners
+        document.getElementById('btn-render').addEventListener('click', doRender);
+
+        document.getElementById('btn-svg').addEventListener('click', () => {
+            if (!engine) { alert('Engine not ready'); return; }
+            try {
+                const svg = engine.exportSvg();
+                download('seed.svg', svg, 'image/svg+xml');
+            } catch (e) { alert('SVG export error: ' + e.message); }
+        });
+
+        document.getElementById('btn-png').addEventListener('click', () => {
+            if (!engine) { alert('Engine not ready'); return; }
+            try {
+                engine.parse(editor.value);
+                engine.layout();
+                const pngData = engine.exportPng();
+                const blob = new Blob([pngData], { type: 'image/png' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'seed.png';
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (e) { alert('PNG export error: ' + e.message); }
+        });
+
+        document.getElementById('examples').addEventListener('change', (e) => {
+            const example = EXAMPLES[e.target.value];
+            if (example) {
+                editor.value = example;
+                doRender();
+            }
+            e.target.value = '';
+        });
+
+        editor.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'Enter') {
+                e.preventDefault();
+                doRender();
+            }
+        });
+
+        console.log('Step 2: Event listeners attached');
+
+        function doRender() {
+            console.log('doRender called');
+            if (!engine) { alert('Engine not ready'); return; }
+            try {
+                errorContainer.style.display = 'none';
+                console.log('Parsing:', editor.value);
+                engine.parse(editor.value);
+                console.log('Parsed, computing layout...');
+                engine.layout();
+                console.log('Layout done, exporting PNG...');
+                const pngData = engine.exportPng();
+                console.log('PNG exported, size:', pngData.length);
+                console.log('PNG type:', typeof pngData, pngData.constructor.name);
+                console.log('PNG first 20 bytes:', Array.from(pngData.slice(0, 20)));
+                // Verify PNG signature
+                const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+                const match = sig.every((b, i) => pngData[i] === b);
+                console.log('PNG signature valid:', match);
+
+                // Try creating blob and data URL
+                const blob = new Blob([pngData], { type: 'image/png' });
+                console.log('Blob size:', blob.size);
+
+                // Also try base64 data URL as alternative
+                // Use chunked conversion to avoid stack overflow with large arrays
+                let binary = '';
+                const chunkSize = 8192;
+                for (let i = 0; i < pngData.length; i += chunkSize) {
+                    const chunk = pngData.slice(i, i + chunkSize);
+                    binary += String.fromCharCode.apply(null, chunk);
+                }
+                const base64 = btoa(binary);
+                const dataUrl = 'data:image/png;base64,' + base64;
+                console.log('Data URL length:', dataUrl.length);
+
+                const url = URL.createObjectURL(blob);
+                console.log('Blob URL:', url);
+
+                const img = new Image();
+                img.onload = () => {
+                    console.log('Image loaded:', img.width, 'x', img.height);
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    canvas.getContext('2d').drawImage(img, 0, 0);
+                    URL.revokeObjectURL(url);
+                    info.textContent = img.width + ' x ' + img.height;
+                };
+                img.onerror = (e) => {
+                    console.error('Image load error from blob URL:', e);
+                    console.log('Trying data URL instead...');
+                    // Try data URL as fallback
+                    const img2 = new Image();
+                    img2.onload = () => {
+                        console.log('Image loaded from data URL:', img2.width, 'x', img2.height);
+                        canvas.width = img2.width;
+                        canvas.height = img2.height;
+                        canvas.getContext('2d').drawImage(img2, 0, 0);
+                        info.textContent = img2.width + ' x ' + img2.height;
+                    };
+                    img2.onerror = (e2) => {
+                        console.error('Image load error from data URL too:', e2);
+                        // Download for inspection
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'debug.png';
+                        a.click();
+                    };
+                    img2.src = dataUrl;
+                };
+                console.log('Setting img.src...');
+                img.src = url;
+            } catch (e) {
+                errorContainer.textContent = e.message;
+                errorContainer.style.display = 'block';
+            }
+        }
+
+        function download(filename, content, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // Load WASM
+        try {
+            console.log('Step 3: Loading WASM...');
+            const module = await import('../pkg/seed_wasm.js');
+            console.log('Step 4: Module loaded');
+
+            await module.default();
+            console.log('Step 5: WASM initialized');
+
+            engine = new module.SeedEngine();
+            const version = module.getVersion();
+            console.log('Step 6: Ready, version:', version);
+
+            status.textContent = 'Ready (v' + version + ')';
+            status.classList.add('ready');
+
+            doRender();
+        } catch (e) {
+            console.error('Load error:', e);
+            status.textContent = 'Error: ' + e.message;
+            status.classList.add('error');
+        }
+    </script>
+</body>
+</html>

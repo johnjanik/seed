@@ -1,0 +1,537 @@
+//! Layout computation from document and constraints.
+
+use std::collections::HashMap;
+
+use seed_core::{
+    ast::{Element, FrameElement, TextElement, Property, PropertyValue},
+    types::ElementId,
+    Document, LayoutError,
+};
+use seed_constraint::{ConstraintSystem, Solution};
+
+use crate::auto_layout::{AutoLayout, Alignment, ChildSize, Padding};
+use crate::text::{measure_text, TextStyle};
+use crate::tree::{Bounds, LayoutNode, LayoutNodeId, LayoutTree};
+
+/// Options for layout computation.
+#[derive(Debug, Clone)]
+pub struct LayoutOptions {
+    /// Default width for the root viewport
+    pub viewport_width: f64,
+    /// Default height for the root viewport
+    pub viewport_height: f64,
+    /// Default font size for text
+    pub default_font_size: f64,
+    /// Default line height
+    pub default_line_height: f64,
+}
+
+impl Default for LayoutOptions {
+    fn default() -> Self {
+        Self {
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            default_font_size: 16.0,
+            default_line_height: 1.2,
+        }
+    }
+}
+
+/// Context for layout computation.
+struct LayoutContext<'a> {
+    options: &'a LayoutOptions,
+    tree: LayoutTree,
+    constraint_system: ConstraintSystem,
+    element_names: HashMap<String, ElementId>,
+    name_counter: u64,
+}
+
+impl<'a> LayoutContext<'a> {
+    fn new(options: &'a LayoutOptions) -> Self {
+        Self {
+            options,
+            tree: LayoutTree::new(),
+            constraint_system: ConstraintSystem::new(),
+            element_names: HashMap::new(),
+            name_counter: 0,
+        }
+    }
+
+    fn generate_name(&mut self, prefix: &str) -> String {
+        self.name_counter += 1;
+        format!("{}_{}", prefix, self.name_counter)
+    }
+}
+
+/// Compute layout for a document.
+pub fn compute_layout(doc: &Document, options: &LayoutOptions) -> Result<LayoutTree, LayoutError> {
+    let mut ctx = LayoutContext::new(options);
+
+    // First pass: Add document to constraint system
+    ctx.constraint_system.add_document(doc)?;
+
+    // Solve constraints
+    let solution = ctx.constraint_system.solve()?;
+
+    // Second pass: Build layout tree from solution
+    for element in &doc.elements {
+        layout_element(&mut ctx, element, None, &solution)?;
+    }
+
+    // Compute absolute bounds
+    ctx.tree.compute_absolute_bounds();
+
+    Ok(ctx.tree)
+}
+
+/// Layout a single element.
+fn layout_element(
+    ctx: &mut LayoutContext,
+    element: &Element,
+    parent_id: Option<LayoutNodeId>,
+    solution: &Solution,
+) -> Result<LayoutNodeId, LayoutError> {
+    match element {
+        Element::Frame(frame) => layout_frame(ctx, frame, parent_id, solution),
+        Element::Text(text) => layout_text(ctx, text, parent_id, solution),
+        Element::Part(_) => {
+            // 3D parts don't have 2D layout
+            let node_id = ctx.tree.next_id();
+            let node = LayoutNode::new(node_id).with_bounds(Bounds::default());
+            if let Some(pid) = parent_id {
+                ctx.tree.add_child(pid, node);
+            } else {
+                ctx.tree.add_root(node);
+            }
+            Ok(node_id)
+        }
+        Element::Component(_) => {
+            // Components should be expanded before layout
+            let node_id = ctx.tree.next_id();
+            let node = LayoutNode::new(node_id).with_bounds(Bounds::default());
+            if let Some(pid) = parent_id {
+                ctx.tree.add_child(pid, node);
+            } else {
+                ctx.tree.add_root(node);
+            }
+            Ok(node_id)
+        }
+        Element::Slot(_) => {
+            // Slots should be expanded before layout
+            let node_id = ctx.tree.next_id();
+            let node = LayoutNode::new(node_id).with_bounds(Bounds::default());
+            if let Some(pid) = parent_id {
+                ctx.tree.add_child(pid, node);
+            } else {
+                ctx.tree.add_root(node);
+            }
+            Ok(node_id)
+        }
+    }
+}
+
+/// Layout a Frame element.
+fn layout_frame(
+    ctx: &mut LayoutContext,
+    frame: &FrameElement,
+    parent_id: Option<LayoutNodeId>,
+    solution: &Solution,
+) -> Result<LayoutNodeId, LayoutError> {
+    let name = frame
+        .name
+        .as_ref()
+        .map(|n| n.0.clone())
+        .unwrap_or_else(|| ctx.generate_name("frame"));
+
+    // Get bounds from constraint solution or use defaults
+    let bounds = get_bounds_from_solution(ctx, &name, solution, parent_id);
+
+    // Get auto-layout settings from properties
+    let auto_layout = get_auto_layout_from_properties(&frame.properties);
+    let clips = get_bool_property(&frame.properties, "clip").unwrap_or(false);
+
+    let node_id = ctx.tree.next_id();
+    let element_id = ElementId(node_id.0);
+
+    let mut node = LayoutNode::new(node_id)
+        .with_element_id(element_id)
+        .with_name(&name)
+        .with_bounds(bounds);
+    node.clips_children = clips;
+
+    // Register the element
+    ctx.element_names.insert(name.clone(), element_id);
+
+    // Add to tree
+    let node_id = if let Some(pid) = parent_id {
+        ctx.tree.add_child(pid, node)
+    } else {
+        ctx.tree.add_root(node)
+    };
+
+    // Layout children
+    if !frame.children.is_empty() {
+        if let Some(ref auto) = auto_layout {
+            // Use auto-layout for children
+            layout_children_auto(ctx, node_id, &frame.children, auto, solution)?;
+        } else {
+            // Layout children using constraints only
+            for child in &frame.children {
+                layout_element(ctx, child, Some(node_id), solution)?;
+            }
+        }
+    }
+
+    Ok(node_id)
+}
+
+/// Layout a Text element.
+fn layout_text(
+    ctx: &mut LayoutContext,
+    text: &TextElement,
+    parent_id: Option<LayoutNodeId>,
+    solution: &Solution,
+) -> Result<LayoutNodeId, LayoutError> {
+    let name = text
+        .name
+        .as_ref()
+        .map(|n| n.0.clone())
+        .unwrap_or_else(|| ctx.generate_name("text"));
+
+    // Get text content
+    let content = match &text.content {
+        seed_core::ast::TextContent::Literal(s) => s.clone(),
+        seed_core::ast::TextContent::TokenRef(_) => "[token]".to_string(), // TODO: resolve tokens
+    };
+
+    // Get text style from properties
+    let style = get_text_style_from_properties(&text.properties, ctx.options);
+
+    // Get max width from parent bounds for wrapping
+    let max_width = parent_id
+        .and_then(|pid| ctx.tree.get(pid))
+        .map(|p| p.bounds.width);
+
+    // Measure text
+    let metrics = measure_text(&content, &style, max_width);
+
+    // Get bounds from constraint solution or use measured size
+    let mut bounds = get_bounds_from_solution(ctx, &name, solution, parent_id);
+
+    // If width/height not constrained, use measured values
+    if bounds.width == 0.0 {
+        bounds.width = metrics.width;
+    }
+    if bounds.height == 0.0 {
+        bounds.height = metrics.height;
+    }
+
+    let node_id = ctx.tree.next_id();
+    let element_id = ElementId(node_id.0);
+
+    let node = LayoutNode::new(node_id)
+        .with_element_id(element_id)
+        .with_name(&name)
+        .with_bounds(bounds);
+
+    ctx.element_names.insert(name.clone(), element_id);
+
+    if let Some(pid) = parent_id {
+        ctx.tree.add_child(pid, node);
+    } else {
+        ctx.tree.add_root(node);
+    }
+
+    Ok(node_id)
+}
+
+/// Get bounds from constraint solution.
+fn get_bounds_from_solution(
+    ctx: &LayoutContext,
+    name: &str,
+    solution: &Solution,
+    parent_id: Option<LayoutNodeId>,
+) -> Bounds {
+    // Look up the element ID from the constraint system
+    let element_id = ctx.constraint_system.get_element_id(name);
+
+    let (x, y, width, height) = if let Some(eid) = element_id {
+        (
+            solution.get(eid, "x").unwrap_or(0.0),
+            solution.get(eid, "y").unwrap_or(0.0),
+            solution.get(eid, "width").unwrap_or(0.0),
+            solution.get(eid, "height").unwrap_or(0.0),
+        )
+    } else {
+        // Element not in constraint system, use defaults
+        if parent_id.is_none() {
+            // Root element defaults to viewport size
+            (0.0, 0.0, ctx.options.viewport_width, ctx.options.viewport_height)
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        }
+    };
+
+    Bounds::new(x, y, width, height)
+}
+
+/// Get auto-layout configuration from properties.
+fn get_auto_layout_from_properties(properties: &[Property]) -> Option<AutoLayout> {
+    let layout_mode = get_string_property(properties, "layout");
+
+    match layout_mode.as_deref() {
+        Some("horizontal") | Some("row") => {
+            let mut auto = AutoLayout::horizontal();
+            apply_auto_layout_properties(&mut auto, properties);
+            Some(auto)
+        }
+        Some("vertical") | Some("column") => {
+            let mut auto = AutoLayout::vertical();
+            apply_auto_layout_properties(&mut auto, properties);
+            Some(auto)
+        }
+        Some("stack") => {
+            // Stack defaults to vertical
+            let mut auto = AutoLayout::vertical();
+            apply_auto_layout_properties(&mut auto, properties);
+            Some(auto)
+        }
+        _ => None,
+    }
+}
+
+/// Apply additional auto-layout properties.
+fn apply_auto_layout_properties(auto: &mut AutoLayout, properties: &[Property]) {
+    if let Some(gap) = get_length_property(properties, "gap") {
+        auto.gap = gap;
+    }
+
+    if let Some(padding) = get_length_property(properties, "padding") {
+        auto.padding = Padding::uniform(padding);
+    }
+
+    if let Some(align) = get_string_property(properties, "align") {
+        auto.alignment = match align.as_str() {
+            "start" => Alignment::Start,
+            "center" => Alignment::Center,
+            "end" => Alignment::End,
+            "stretch" => Alignment::Stretch,
+            _ => Alignment::Start,
+        };
+    }
+}
+
+/// Get text style from properties.
+fn get_text_style_from_properties(properties: &[Property], options: &LayoutOptions) -> TextStyle {
+    TextStyle {
+        font_family: get_string_property(properties, "font-family")
+            .unwrap_or_else(|| "sans-serif".to_string()),
+        font_size: get_length_property(properties, "font-size")
+            .unwrap_or(options.default_font_size),
+        font_weight: get_number_property(properties, "font-weight")
+            .map(|n| n as u16)
+            .unwrap_or(400),
+        line_height: get_number_property(properties, "line-height")
+            .unwrap_or(options.default_line_height),
+        letter_spacing: get_length_property(properties, "letter-spacing")
+            .unwrap_or(0.0),
+    }
+}
+
+/// Layout children using auto-layout.
+fn layout_children_auto(
+    ctx: &mut LayoutContext,
+    parent_id: LayoutNodeId,
+    children: &[Element],
+    auto_layout: &AutoLayout,
+    solution: &Solution,
+) -> Result<(), LayoutError> {
+    // First, layout all children to get their sizes
+    let mut child_ids = Vec::new();
+    let mut child_sizes = Vec::new();
+
+    for child in children {
+        let child_id = layout_element(ctx, child, Some(parent_id), solution)?;
+        child_ids.push(child_id);
+
+        let child_node = ctx.tree.get(child_id).unwrap();
+        child_sizes.push(ChildSize {
+            width: if child_node.bounds.width > 0.0 {
+                Some(child_node.bounds.width)
+            } else {
+                None
+            },
+            height: if child_node.bounds.height > 0.0 {
+                Some(child_node.bounds.height)
+            } else {
+                None
+            },
+            min_width: 0.0,
+            min_height: 0.0,
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+        });
+    }
+
+    // Get parent bounds
+    let parent_bounds = ctx.tree.get(parent_id).unwrap().bounds;
+
+    // Compute layout
+    let child_bounds = auto_layout.layout(parent_bounds, &child_sizes);
+
+    // Apply computed bounds to children
+    for (child_id, bounds) in child_ids.into_iter().zip(child_bounds.into_iter()) {
+        if let Some(child) = ctx.tree.get_mut(child_id) {
+            child.bounds = bounds;
+        }
+    }
+
+    Ok(())
+}
+
+// Property accessors
+
+fn get_string_property(properties: &[Property], name: &str) -> Option<String> {
+    properties.iter().find(|p| p.name == name).and_then(|p| {
+        match &p.value {
+            PropertyValue::String(s) => Some(s.clone()),
+            PropertyValue::Enum(s) => Some(s.clone()),
+            _ => None,
+        }
+    })
+}
+
+fn get_length_property(properties: &[Property], name: &str) -> Option<f64> {
+    properties.iter().find(|p| p.name == name).and_then(|p| {
+        match &p.value {
+            PropertyValue::Length(l) => l.to_px(None),
+            PropertyValue::Number(n) => Some(*n),
+            _ => None,
+        }
+    })
+}
+
+fn get_number_property(properties: &[Property], name: &str) -> Option<f64> {
+    properties.iter().find(|p| p.name == name).and_then(|p| {
+        match &p.value {
+            PropertyValue::Number(n) => Some(*n),
+            PropertyValue::Length(l) => l.to_px(None),
+            _ => None,
+        }
+    })
+}
+
+fn get_bool_property(properties: &[Property], name: &str) -> Option<bool> {
+    properties.iter().find(|p| p.name == name).and_then(|p| {
+        match &p.value {
+            PropertyValue::Boolean(b) => Some(*b),
+            _ => None,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use seed_core::ast::*;
+    use seed_core::types::Identifier;
+
+    fn make_empty_doc() -> Document {
+        Document {
+            meta: None,
+            tokens: None,
+            elements: vec![],
+            span: Span::default(),
+        }
+    }
+
+    fn make_frame_element(name: &str, width: f64, height: f64) -> Element {
+        Element::Frame(FrameElement {
+            name: Some(Identifier(name.to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(width),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(height),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![],
+            span: Span::default(),
+        })
+    }
+
+    #[test]
+    fn test_compute_empty_layout() {
+        let doc = make_empty_doc();
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+        assert_eq!(tree.roots().len(), 0);
+    }
+
+    #[test]
+    fn test_compute_single_frame() {
+        let mut doc = make_empty_doc();
+        doc.elements.push(make_frame_element("root", 400.0, 300.0));
+
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+
+        assert_eq!(tree.roots().len(), 1);
+        let root = tree.get(tree.roots()[0]).unwrap();
+        assert!((root.bounds.width - 400.0).abs() < 0.001);
+        assert!((root.bounds.height - 300.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compute_nested_frames() {
+        let child = make_frame_element("child", 100.0, 50.0);
+
+        let parent = Element::Frame(FrameElement {
+            name: Some(Identifier("parent".to_string())),
+            properties: vec![],
+            constraints: vec![
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "width".to_string(),
+                        value: Expression::Literal(400.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+                Constraint {
+                    kind: ConstraintKind::Equality {
+                        property: "height".to_string(),
+                        value: Expression::Literal(300.0),
+                    },
+                    priority: None,
+                    span: Span::default(),
+                },
+            ],
+            children: vec![child],
+            span: Span::default(),
+        });
+
+        let mut doc = make_empty_doc();
+        doc.elements.push(parent);
+
+        let options = LayoutOptions::default();
+        let tree = compute_layout(&doc, &options).unwrap();
+
+        assert_eq!(tree.roots().len(), 1);
+
+        let parent_node = tree.get(tree.roots()[0]).unwrap();
+        assert_eq!(parent_node.children.len(), 1);
+    }
+}

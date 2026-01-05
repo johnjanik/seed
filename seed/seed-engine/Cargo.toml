@@ -1,0 +1,75 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/seed-core",
+    "crates/seed-parser",
+    "crates/seed-resolver",
+    "crates/seed-expander",
+    "crates/seed-constraint",
+    "crates/seed-layout",
+    "crates/seed-render-2d",
+    "crates/seed-render-3d",
+    "crates/seed-export",
+    "crates/seed-wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/seed-spec/seed-engine"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Internal crates
+seed-core = { path = "crates/seed-core" }
+seed-parser = { path = "crates/seed-parser" }
+seed-resolver = { path = "crates/seed-resolver" }
+seed-expander = { path = "crates/seed-expander" }
+seed-constraint = { path = "crates/seed-constraint" }
+seed-layout = { path = "crates/seed-layout" }
+seed-render-2d = { path = "crates/seed-render-2d" }
+seed-render-3d = { path = "crates/seed-render-3d" }
+seed-export = { path = "crates/seed-export" }
+
+# Parsing
+nom = "7"
+
+# Data structures
+indexmap = "2"
+smallvec = "1"
+
+# Error handling
+thiserror = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Math
+glam = "0.29"
+
+# GPU rendering
+wgpu = "23"
+
+# 2D tessellation
+lyon = "1"
+
+# WASM
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+
+[workspace.dev-dependencies]
+criterion = "0.5"
+proptest = "1"
+insta = { version = "1", features = ["json"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
