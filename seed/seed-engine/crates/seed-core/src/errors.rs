@@ -149,6 +149,9 @@ pub enum RenderError {
 
     #[error("Font loading failed: {path}")]
     FontLoadFailed { path: String },
+
+    #[error("GPU error: {reason}")]
+    GpuError { reason: String },
 }
 
 /// Errors during export.

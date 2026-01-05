@@ -12,7 +12,9 @@ thiserror.workspace = true
 glam.workspace = true
 wgpu = { workspace = true, optional = true }
 lyon.workspace = true
+bytemuck = { version = "1.14", features = ["derive"], optional = true }
+pollster = { version = "0.4", optional = true }
 
 [features]
 default = ["gpu"]
-gpu = ["dep:wgpu"]
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]

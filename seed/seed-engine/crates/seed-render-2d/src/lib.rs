@@ -4,37 +4,34 @@
 //! as well as a software rasterizer for headless rendering.
 
 mod shapes;
-mod pipeline;
 pub mod primitives;
 pub mod scene;
 pub mod text;
+
+#[cfg(feature = "gpu")]
+mod gpu;
 
 pub use primitives::*;
 pub use scene::build_scene;
 pub use shapes::{Mesh, Tessellator, Vertex};
 pub use text::{TextRenderer, blend_text_onto_buffer};
 
+#[cfg(feature = "gpu")]
+pub use gpu::GpuRenderer;
+
 use seed_core::{Document, RenderError};
 use seed_layout::LayoutTree;
 
-/// 2D renderer using wgpu.
+/// Render a document to RGBA pixels using the GPU.
+///
+/// This is a convenience function that creates a GpuRenderer and renders
+/// the document to a pixel buffer. For repeated rendering, consider
+/// creating a GpuRenderer directly to reuse GPU resources.
 #[cfg(feature = "gpu")]
-pub struct Renderer2D {
-    // GPU resources will go here
-}
-
-#[cfg(feature = "gpu")]
-impl Renderer2D {
-    /// Create a new renderer.
-    pub fn new() -> Result<Self, RenderError> {
-        Ok(Self {})
-    }
-
-    /// Render a document with computed layout.
-    pub fn render(&mut self, _doc: &Document, _layout: &LayoutTree) -> Result<(), RenderError> {
-        // TODO: Implement GPU rendering
-        Ok(())
-    }
+pub fn render_gpu(doc: &Document, layout: &LayoutTree) -> Result<Vec<u8>, RenderError> {
+    let scene = build_scene(doc, layout);
+    let mut renderer = GpuRenderer::new(scene.width as u32, scene.height as u32)?;
+    renderer.render(&scene)
 }
 
 /// Software rasterizer for headless rendering.
