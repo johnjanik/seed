@@ -3,8 +3,8 @@
 //! Supported formats:
 //! - SVG (2D vector graphics)
 //! - PNG (2D raster)
-//! - PDF (2D print-ready) - planned
-//! - STEP (3D CAD interchange) - planned
+//! - PDF (2D print-ready)
+//! - STEP (3D CAD interchange - AP203)
 //! - STL (3D printing)
 
 #[cfg(feature = "svg")]
@@ -23,6 +23,7 @@ use seed_layout::LayoutTree;
 // Re-export commonly used types
 pub use png::PngOptions;
 pub use stl::{mesh_to_stl, mesh_to_stl_ascii};
+pub use step::{StepOptions, LengthUnit};
 
 /// Export a 2D document to SVG.
 #[cfg(feature = "svg")]
@@ -50,9 +51,17 @@ pub fn export_pdf(doc: &Document, layout: &LayoutTree) -> Result<Vec<u8>, Export
     pdf::export(doc, layout)
 }
 
-/// Export a 3D document to STEP.
+/// Export a 3D document to STEP AP203 format.
 pub fn export_step(doc: &Document) -> Result<Vec<u8>, ExportError> {
     step::export(doc)
+}
+
+/// Export a 3D document to STEP with custom options.
+pub fn export_step_with_options(
+    doc: &Document,
+    options: &StepOptions,
+) -> Result<Vec<u8>, ExportError> {
+    step::export_with_options(doc, options)
 }
 
 /// Export a 3D document to STL (binary).
