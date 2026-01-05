@@ -3,6 +3,9 @@
 //! This module provides an interface between Seed's constraint AST and the
 //! Cassowary simplex solver.
 
+// Public API methods not yet used internally
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use seed_core::{

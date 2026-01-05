@@ -7,6 +7,9 @@
 //! The algorithm uses a variation of the simplex method optimized for incremental
 //! constraint solving with priorities (strengths).
 
+// Many methods are part of the public API but not used internally yet
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::fmt;
 

@@ -184,6 +184,7 @@ pub fn fresnel_schlick(cos_theta: f32, f0: f32) -> f32 {
 }
 
 /// Calculate Fresnel reflectance for RGB (metallic materials).
+#[allow(dead_code)]
 pub fn fresnel_schlick_rgb(cos_theta: f32, f0: [f32; 3]) -> [f32; 3] {
     let one_minus_cos = (1.0 - cos_theta).powf(5.0);
     [
@@ -213,6 +214,7 @@ fn linear_to_srgb(value: f32) -> f32 {
 }
 
 /// Convert sRGB color to linear.
+#[allow(dead_code)]
 pub fn srgb_to_linear(value: f32) -> f32 {
     if value <= 0.04045 {
         value / 12.92

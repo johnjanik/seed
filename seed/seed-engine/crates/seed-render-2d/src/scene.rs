@@ -2,7 +2,7 @@
 
 use seed_core::{
     ast::{Element, FrameElement, TextElement, Property, PropertyValue},
-    types::{Color, Gradient, LinearGradient as AstLinearGradient, RadialGradient as AstRadialGradient, ConicGradient as AstConicGradient},
+    types::{Color, Gradient},
     Document,
 };
 use seed_layout::{LayoutTree, LayoutNodeId};

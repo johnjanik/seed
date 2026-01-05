@@ -305,6 +305,7 @@ impl<'a> TokenResolver<'a> {
 }
 
 /// Resolve token definitions within a token block (handles token-to-token references).
+#[allow(dead_code)]
 pub fn resolve_token_definitions(
     tokens: &mut TokenMap,
     definitions: &[(String, seed_core::ast::TokenValue)],

@@ -110,6 +110,7 @@ impl GradientCollector {
         id
     }
 
+    #[allow(dead_code)]
     fn find_gradient_id(&self, gradient: &Gradient) -> Option<String> {
         for (id, existing) in &self.gradients {
             if gradients_equal(existing, gradient) {

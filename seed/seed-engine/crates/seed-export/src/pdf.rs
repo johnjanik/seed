@@ -2,7 +2,7 @@
 //!
 //! This module exports Seed documents to PDF format using pdf-writer.
 
-use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
+use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str};
 use seed_core::{
     ast::{Element, FrameElement, TextElement, Property, PropertyValue, TextContent},
     types::Color,

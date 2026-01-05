@@ -50,6 +50,7 @@ impl ComponentRegistry {
 }
 
 /// Builder for creating component definitions.
+#[allow(dead_code)]
 pub struct ComponentBuilder {
     name: String,
     props: Vec<PropDefinition>,
@@ -57,6 +58,7 @@ pub struct ComponentBuilder {
     template: Vec<seed_core::ast::Element>,
 }
 
+#[allow(dead_code)]
 impl ComponentBuilder {
     /// Create a new component builder.
     pub fn new(name: &str) -> Self {

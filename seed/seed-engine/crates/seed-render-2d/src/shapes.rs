@@ -313,6 +313,7 @@ fn build_path_from_commands(commands: &[PathCommand]) -> Path {
     builder.build()
 }
 
+#[allow(dead_code)]
 fn fill_to_color(fill: &Fill) -> [f32; 4] {
     match fill {
         Fill::Solid(c) => [c.r, c.g, c.b, c.a],

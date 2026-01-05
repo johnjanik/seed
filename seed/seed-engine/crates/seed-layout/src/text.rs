@@ -140,6 +140,7 @@ fn measure_wrapped_text(
 
 /// Simple text shaping result for rendering.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ShapedText {
     /// Lines of text with their positions
     pub lines: Vec<ShapedLine>,
@@ -149,6 +150,7 @@ pub struct ShapedText {
 
 /// A shaped line of text.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ShapedLine {
     /// The text content
     pub text: String,
@@ -162,6 +164,7 @@ pub struct ShapedLine {
 
 /// Text alignment for multi-line text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
 pub enum TextAlign {
     #[default]
     Left,
@@ -170,6 +173,7 @@ pub enum TextAlign {
 }
 
 /// Shape text for rendering.
+#[allow(dead_code)]
 pub fn shape_text(
     text: &str,
     style: &TextStyle,
