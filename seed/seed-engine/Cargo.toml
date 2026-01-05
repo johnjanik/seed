@@ -10,6 +10,7 @@ members = [
     "crates/seed-render-2d",
     "crates/seed-render-3d",
     "crates/seed-export",
+    "crates/seed-analyze",
     "crates/seed-wasm",
 ]
 
@@ -31,6 +32,7 @@ seed-layout = { path = "crates/seed-layout" }
 seed-render-2d = { path = "crates/seed-render-2d" }
 seed-render-3d = { path = "crates/seed-render-3d" }
 seed-export = { path = "crates/seed-export" }
+seed-analyze = { path = "crates/seed-analyze" }
 
 # Parsing
 nom = "7"

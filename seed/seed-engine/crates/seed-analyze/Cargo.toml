@@ -1,0 +1,20 @@
+[package]
+name = "seed-analyze"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Image analysis and Seed code generation for the Seed rendering engine"
+
+[dependencies]
+# Image processing
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Math
+glam.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[dev-dependencies]
