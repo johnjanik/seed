@@ -149,7 +149,7 @@ impl Default for ShapeFitConfig {
 pub fn classify_shape(contour: &mut Contour, config: &ShapeFitConfig) -> DetectedShape {
     // Get basic properties
     let circularity = contour.circularity();
-    let (x, y, w, h) = contour.bounding_box();
+    let (_x, _y, w, h) = contour.bounding_box();
     let aspect_ratio = w.max(1) as f32 / h.max(1) as f32;
 
     // Check for line (very elongated)

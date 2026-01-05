@@ -287,6 +287,9 @@ pub fn analyze_image_with_config(
     // Classify regions (frame vs text) - enhanced with edge data
     hierarchy::classify_regions(&mut regions, &pixels, proc_width);
 
+    // Group adjacent text regions into multi-line text blocks
+    hierarchy::group_text_regions(&mut regions);
+
     // Analyze layout patterns (row, column, grid)
     hierarchy::analyze_layouts(&mut regions);
 

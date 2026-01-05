@@ -292,6 +292,48 @@ pub struct RenderOptionsJs {
     pub debug: Option<bool>,
 }
 
+/// Configuration for image analysis from JavaScript.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyzeConfigJs {
+    /// Maximum dimension for processing (larger images are scaled down).
+    #[serde(default)]
+    pub max_dimension: Option<u32>,
+    /// Color distance threshold for flood fill.
+    #[serde(default)]
+    pub color_threshold: Option<f32>,
+    /// Minimum region area to consider.
+    #[serde(default)]
+    pub min_region_area: Option<u64>,
+    /// Number of colors to extract for palette.
+    #[serde(default)]
+    pub palette_size: Option<usize>,
+    /// Canny edge detection: low threshold for hysteresis.
+    #[serde(default)]
+    pub canny_low_threshold: Option<f32>,
+    /// Canny edge detection: high threshold for hysteresis.
+    #[serde(default)]
+    pub canny_high_threshold: Option<f32>,
+    /// Morphological kernel size for edge cleanup.
+    #[serde(default)]
+    pub morph_kernel_size: Option<u32>,
+    /// Use enhanced edge-based detection pipeline.
+    #[serde(default)]
+    pub use_edge_detection: Option<bool>,
+    /// Enable adaptive preprocessing for dark themes.
+    #[serde(default)]
+    pub adaptive_dark_theme: Option<bool>,
+    /// Use CLAHE contrast enhancement for dark themes.
+    #[serde(default)]
+    pub use_clahe: Option<bool>,
+    /// Use edge-constrained flood fill.
+    #[serde(default)]
+    pub use_edge_constrained_fill: Option<bool>,
+    /// Multiplier for color threshold on dark themes.
+    #[serde(default)]
+    pub dark_color_threshold_mult: Option<f32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

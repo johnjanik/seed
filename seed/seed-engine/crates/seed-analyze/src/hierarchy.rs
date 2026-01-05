@@ -148,21 +148,34 @@ fn classify_region(
     let bounds = &region.bounds;
     let area = bounds.area();
 
-    // Very small regions are unlikely to be meaningful frames
-    if area < 50 {
+    // Very small regions - likely noise or anti-aliasing artifacts
+    if area < 30 {
+        return RegionType::Frame;
+    }
+
+    // Large regions are almost always frames/containers, not text
+    // Text is rarely larger than 400x60 pixels
+    if bounds.width > 200 && bounds.height > 60 {
         return RegionType::Frame;
     }
 
     let aspect_ratio = bounds.width as f32 / bounds.height.max(1) as f32;
     let variation = sample_color_variation(pixels, width, bounds);
 
+    // Check if region has gradient (indicates Frame, not Text)
+    // Gradients have moderate-high variation but uniform structure
+    let has_gradient = variation > 0.08 && bounds.width > 50 && bounds.height > 30;
+    if has_gradient {
+        return RegionType::Frame;
+    }
+
     // Check if this region is inside a parent container
     if let Some(parent_region) = parent {
         let parent_area = parent_region.bounds.area();
         let area_ratio = area as f32 / parent_area as f32;
 
-        // Small region inside a container (< 30% of parent area)
-        if area_ratio < 0.3 {
+        // Region inside a container (< 40% of parent area)
+        if area_ratio < 0.4 {
             let edge_density = calculate_edge_density(pixels, width, bounds);
 
             // Check contrast with parent
@@ -170,22 +183,28 @@ fn classify_region(
             let parent_color = get_dominant_color(pixels, width, &parent_region.bounds);
             let contrast = color_contrast(&region_color, &parent_color);
 
-            // Icon detection: nearly square, small, with details
+            // Icon detection: nearly square, small size, with internal details
             let is_icon_like = aspect_ratio > 0.5
                 && aspect_ratio < 2.0
                 && bounds.width < 60
                 && bounds.height < 60
-                && edge_density > 0.05;
+                && (edge_density > 0.03 || contrast > 50.0);
 
-            // Text detection: various shapes with high contrast
-            let is_text_like = (
-                // Traditional wide text (labels)
-                (aspect_ratio > 1.5 && bounds.height < 80)
-                // Or tall narrow text (single letters, icons)
-                || (bounds.width < 50 && bounds.height < 50)
-                // Or any small region with high contrast and edge density
-                || (area_ratio < 0.1 && contrast > 50.0)
-            ) && (variation > 0.05 || edge_density > 0.03 || contrast > 30.0);
+            // Text detection: must be reasonably small and have text-like properties
+            let max_text_width = 350;  // Text lines rarely exceed this
+            let max_text_height = 50;  // Single line text height limit
+
+            let is_text_like = bounds.width <= max_text_width
+                && bounds.height <= max_text_height
+                && (
+                    // Wide text (labels, titles) - high aspect ratio, thin
+                    (aspect_ratio > 3.0 && bounds.height < 30)
+                    // Small region with good contrast (buttons labels, small text)
+                    || (area_ratio < 0.08 && contrast > 60.0 && bounds.height < 40)
+                    // Narrow text elements
+                    || (bounds.width < 50 && bounds.height < 30 && contrast > 40.0)
+                )
+                && (variation > 0.02 || edge_density > 0.02);
 
             if is_icon_like || is_text_like {
                 return RegionType::Text;
@@ -194,8 +213,8 @@ fn classify_region(
     }
 
     // Standalone text detection (not inside container)
-    // Traditional wide text with variation
-    if aspect_ratio > 2.5 && variation > 0.1 && bounds.height < 50 {
+    // Headers, titles outside of cards - must be thin and wide
+    if aspect_ratio > 4.0 && bounds.height < 40 && bounds.height > 8 {
         return RegionType::Text;
     }
 
@@ -623,6 +642,147 @@ fn calculate_size_variance(sizes: &[u32]) -> f32 {
     let mean: f32 = sizes.iter().sum::<u32>() as f32 / sizes.len() as f32;
     let variance: f32 = sizes.iter().map(|s| (*s as f32 - mean).powi(2)).sum::<f32>() / sizes.len() as f32;
     variance.sqrt()
+}
+
+/// Group adjacent text regions into multi-line text blocks.
+///
+/// This merges text regions that are:
+/// - Vertically adjacent (small gap between them)
+/// - Horizontally aligned (similar x position or overlapping)
+/// - Similar in character (both are Text type)
+pub fn group_text_regions(regions: &mut [Region]) {
+    for region in regions.iter_mut() {
+        group_text_children(region);
+        group_text_regions(&mut region.children);
+    }
+}
+
+/// Group text children within a single parent region.
+fn group_text_children(parent: &mut Region) {
+    if parent.children.len() < 2 {
+        return;
+    }
+
+    // Collect text regions and their indices
+    let text_indices: Vec<usize> = parent
+        .children
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.region_type == RegionType::Text)
+        .map(|(i, _)| i)
+        .collect();
+
+    if text_indices.len() < 2 {
+        return;
+    }
+
+    // Find groups of text regions to merge
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut used = vec![false; parent.children.len()];
+
+    for &i in &text_indices {
+        if used[i] {
+            continue;
+        }
+
+        let mut group = vec![i];
+        used[i] = true;
+
+        let base = &parent.children[i].bounds;
+        let base_right = base.x + base.width;
+
+        // Find other text regions that should be grouped with this one
+        for &j in &text_indices {
+            if used[j] || i == j {
+                continue;
+            }
+
+            let other = &parent.children[j].bounds;
+            let other_right = other.x + other.width;
+
+            // Check vertical adjacency (gap less than 1.5x the height)
+            let vertical_gap = if other.y > base.y + base.height {
+                other.y - (base.y + base.height)
+            } else if base.y > other.y + other.height {
+                base.y - (other.y + other.height)
+            } else {
+                0 // Overlapping vertically
+            };
+
+            let max_gap = (base.height.max(other.height) as f32 * 1.5) as u32;
+
+            // Check horizontal alignment (overlapping x ranges or similar left edge)
+            let h_overlap = base.x < other_right && base_right > other.x;
+            let similar_left = (base.x as i32 - other.x as i32).abs() < 20;
+
+            if vertical_gap < max_gap && (h_overlap || similar_left) {
+                group.push(j);
+                used[j] = true;
+            }
+        }
+
+        if group.len() > 1 {
+            groups.push(group);
+        }
+    }
+
+    // Merge groups into single text regions
+    for group in groups.iter().rev() {
+        if group.len() < 2 {
+            continue;
+        }
+
+        // Calculate merged bounds
+        let mut min_x = u32::MAX;
+        let mut min_y = u32::MAX;
+        let mut max_x = 0u32;
+        let mut max_y = 0u32;
+
+        for &idx in group {
+            let b = &parent.children[idx].bounds;
+            min_x = min_x.min(b.x);
+            min_y = min_y.min(b.y);
+            max_x = max_x.max(b.x + b.width);
+            max_y = max_y.max(b.y + b.height);
+        }
+
+        // Get the first region's properties as base
+        let first_idx = group[0];
+        let _line_count = group.len() as u32;
+
+        // Update the first region to be the merged region
+        parent.children[first_idx].bounds = Bounds::new(
+            min_x,
+            min_y,
+            max_x - min_x,
+            max_y - min_y,
+        );
+
+        // Update layout info to indicate multi-line
+        if parent.children[first_idx].layout.is_none() {
+            parent.children[first_idx].layout = Some(LayoutInfo {
+                direction: LayoutDirection::Column,
+                ..Default::default()
+            });
+        }
+
+        // Store line count in a comment or we could add a field
+        // For now, the height increase indicates multi-line
+
+        // Remove the other regions (in reverse order to maintain indices)
+        let mut to_remove: Vec<usize> = group[1..].to_vec();
+        to_remove.sort_by(|a, b| b.cmp(a)); // Sort descending
+
+        for idx in to_remove {
+            parent.children.remove(idx);
+        }
+    }
+}
+
+/// Estimate line count from region height and typical line height.
+pub fn estimate_line_count(height: u32, base_font_size: f32) -> u32 {
+    let line_height = base_font_size * 1.4; // Typical line height
+    ((height as f32 / line_height).round() as u32).max(1)
 }
 
 #[cfg(test)]

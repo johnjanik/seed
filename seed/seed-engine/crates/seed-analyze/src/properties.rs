@@ -75,18 +75,61 @@ fn detect_single_corner_radius(
     threshold: f32,
     corner: Corner,
 ) -> f32 {
-    // Start from corner, walk diagonally inward until we hit interior color
-    let (start_x, start_y, dx, dy) = match corner {
-        Corner::TopLeft => (bounds.x, bounds.y, 1i32, 1i32),
-        Corner::TopRight => (bounds.x + bounds.width - 1, bounds.y, -1, 1),
-        Corner::BottomLeft => (bounds.x, bounds.y + bounds.height - 1, 1, -1),
-        Corner::BottomRight => (bounds.x + bounds.width - 1, bounds.y + bounds.height - 1, -1, -1),
+    // Use multiple methods and take the best estimate
+    let diagonal_radius = detect_corner_radius_diagonal(pixels, width, bounds, interior_color, threshold, &corner);
+    let arc_radius = detect_corner_radius_arc(pixels, width, bounds, interior_color, threshold, &corner);
+
+    // Take the smaller of the two valid results (more conservative)
+    // This prevents over-estimation from noisy pixels
+    let radius = match (diagonal_radius > 0.0, arc_radius > 0.0) {
+        (true, true) => diagonal_radius.min(arc_radius),
+        (true, false) => diagonal_radius,
+        (false, true) => arc_radius,
+        (false, false) => 0.0,
     };
 
-    let max_radius = bounds.width.min(bounds.height) / 4;
+    // Practical cap: UI elements rarely have corner radius > 30px
+    // (even Material Design's largest radius is 28dp)
+    radius.min(30.0)
+}
+
+/// Detect corner radius by walking diagonally.
+fn detect_corner_radius_diagonal(
+    pixels: &[[u8; 4]],
+    width: u32,
+    bounds: &Bounds,
+    interior_color: &Color,
+    threshold: f32,
+    corner: &Corner,
+) -> f32 {
+    // Skip corner radius detection for small elements (icons, buttons)
+    if bounds.width < 20 || bounds.height < 20 {
+        return 0.0;
+    }
+
+    let (start_x, start_y, dx, dy) = match corner {
+        Corner::TopLeft => (bounds.x, bounds.y, 1i32, 1i32),
+        Corner::TopRight => (bounds.x + bounds.width.saturating_sub(1), bounds.y, -1, 1),
+        Corner::BottomLeft => (bounds.x, bounds.y + bounds.height.saturating_sub(1), 1, -1),
+        Corner::BottomRight => (bounds.x + bounds.width.saturating_sub(1), bounds.y + bounds.height.saturating_sub(1), -1, -1),
+    };
+
+    // Practical limit: check up to 40px (most UI corner radii are under 30px)
+    let max_radius = bounds.width.min(bounds.height).min(40) / 2;
     let mut radius = 0.0f32;
 
-    for step in 0..max_radius {
+    // First check: does the corner itself look like interior?
+    // If yes, there's likely no corner radius
+    let corner_idx = (start_y * width + start_x) as usize;
+    if corner_idx < pixels.len() {
+        let corner_color = Color::from_pixel(pixels[corner_idx]);
+        if corner_color.distance(interior_color) < threshold {
+            // Corner pixel matches interior - no rounded corner here
+            return 0.0;
+        }
+    }
+
+    for step in 1..max_radius {
         let x = (start_x as i32 + dx * step as i32) as u32;
         let y = (start_y as i32 + dy * step as i32) as u32;
         let idx = (y * width + x) as usize;
@@ -97,13 +140,84 @@ fn detect_single_corner_radius(
 
         let color = Color::from_pixel(pixels[idx]);
         if color.distance(interior_color) < threshold {
-            // Found interior - this is the approximate radius
             radius = step as f32 * 1.414; // Diagonal step is sqrt(2)
             break;
         }
     }
 
     radius
+}
+
+/// Detect corner radius by sampling along the corner arc.
+/// More accurate for rounded corners in real UI elements.
+fn detect_corner_radius_arc(
+    pixels: &[[u8; 4]],
+    width: u32,
+    bounds: &Bounds,
+    interior_color: &Color,
+    threshold: f32,
+    corner: &Corner,
+) -> f32 {
+    // Skip corner radius detection for small elements
+    if bounds.width < 20 || bounds.height < 20 {
+        return 0.0;
+    }
+
+    // Practical limit: check up to 40px (most UI corner radii are under 30px)
+    let max_radius = bounds.width.min(bounds.height).min(40);
+
+    // Get corner position and direction
+    let (corner_x, corner_y, dir_x, dir_y) = match corner {
+        Corner::TopLeft => (bounds.x as i32, bounds.y as i32, 1i32, 1i32),
+        Corner::TopRight => ((bounds.x + bounds.width) as i32 - 1, bounds.y as i32, -1, 1),
+        Corner::BottomLeft => (bounds.x as i32, (bounds.y + bounds.height) as i32 - 1, 1, -1),
+        Corner::BottomRight => ((bounds.x + bounds.width) as i32 - 1, (bounds.y + bounds.height) as i32 - 1, -1, -1),
+    };
+
+    // Test different radii
+    for test_r in (1..=max_radius).rev() {
+        // Sample points along the arc for this radius
+        let mut matches = 0;
+        let mut total = 0;
+
+        // Sample 5 points along the 90-degree arc
+        for i in 0..=4 {
+            let angle = std::f32::consts::PI / 2.0 * (i as f32 / 4.0);
+
+            // Point on the arc (from corner center)
+            let arc_x = corner_x + (dir_x * test_r as i32) - (dir_x as f32 * test_r as f32 * angle.cos()) as i32;
+            let arc_y = corner_y + (dir_y * test_r as i32) - (dir_y as f32 * test_r as f32 * angle.sin()) as i32;
+
+            if arc_x < 0 || arc_y < 0 {
+                continue;
+            }
+
+            let idx = (arc_y as u32 * width + arc_x as u32) as usize;
+            if idx >= pixels.len() {
+                continue;
+            }
+
+            let color = Color::from_pixel(pixels[idx]);
+            total += 1;
+
+            // Check if this point is NOT interior (i.e., it's in the rounded corner cutoff)
+            if color.distance(interior_color) > threshold {
+                matches += 1;
+            }
+        }
+
+        // If most points are NOT interior, this radius is too large
+        if total > 0 && matches > total / 2 {
+            continue;
+        }
+
+        // Found the radius where the interior starts
+        if test_r > 1 {
+            return test_r as f32;
+        }
+    }
+
+    0.0
 }
 
 /// Detect stroke by comparing border pixels to interior.

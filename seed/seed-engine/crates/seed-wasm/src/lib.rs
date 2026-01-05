@@ -335,6 +335,57 @@ impl SeedEngine {
         seed_export::export_pdf(doc, layout)
             .map_err(|e| JsError::new(&format!("PDF export error: {}", e)))
     }
+
+    /// Analyze a PNG image and generate Seed code.
+    ///
+    /// Takes PNG bytes as input and returns Seed markup as a string.
+    /// The analyzer uses computer vision to detect UI elements including:
+    /// - Frames/containers with colors and gradients
+    /// - Text regions (with placeholder content)
+    /// - Icons and images
+    /// - Layout patterns (row, column, grid)
+    /// - Corner radii, strokes, and shadows
+    ///
+    /// Works with both light and dark themed UIs.
+    #[wasm_bindgen(js_name = analyzeImage)]
+    pub fn analyze_image(&mut self, png_bytes: &[u8]) -> Result<String, JsError> {
+        let seed_code = seed_analyze::analyze_image(png_bytes)
+            .map_err(|e| JsError::new(&format!("Analysis error: {}", e)))?;
+
+        // Optionally parse the result so it can be immediately rendered
+        if let Ok(_) = self.parse(&seed_code) {
+            // Parse succeeded, layout will be available
+        }
+
+        Ok(seed_code)
+    }
+
+    /// Analyze a PNG image with custom configuration.
+    #[wasm_bindgen(js_name = analyzeImageWithConfig)]
+    pub fn analyze_image_with_config(&mut self, png_bytes: &[u8], config: JsValue) -> Result<String, JsError> {
+        let config_js: AnalyzeConfigJs = serde_wasm_bindgen::from_value(config)
+            .map_err(|e| JsError::new(&format!("Invalid config: {}", e)))?;
+
+        let config = seed_analyze::AnalyzeConfig {
+            max_dimension: config_js.max_dimension.unwrap_or(800),
+            color_threshold: config_js.color_threshold.unwrap_or(15.0),
+            min_region_area: config_js.min_region_area.unwrap_or(100),
+            palette_size: config_js.palette_size.unwrap_or(8),
+            canny_low_threshold: config_js.canny_low_threshold.unwrap_or(30.0),
+            canny_high_threshold: config_js.canny_high_threshold.unwrap_or(100.0),
+            morph_kernel_size: config_js.morph_kernel_size.unwrap_or(3),
+            use_edge_detection: config_js.use_edge_detection.unwrap_or(true),
+            adaptive_dark_theme: config_js.adaptive_dark_theme.unwrap_or(true),
+            use_clahe: config_js.use_clahe.unwrap_or(true),
+            use_edge_constrained_fill: config_js.use_edge_constrained_fill.unwrap_or(true),
+            dark_color_threshold_mult: config_js.dark_color_threshold_mult.unwrap_or(0.5),
+        };
+
+        let seed_code = seed_analyze::analyze_image_with_config(png_bytes, &config)
+            .map_err(|e| JsError::new(&format!("Analysis error: {}", e)))?;
+
+        Ok(seed_code)
+    }
 }
 
 impl SeedEngine {
@@ -408,6 +459,16 @@ pub fn parse_document_standalone(source: &str) -> Result<JsValue, JsError> {
 #[wasm_bindgen(js_name = getVersion)]
 pub fn get_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Analyze a PNG image and generate Seed source code.
+///
+/// Takes raw PNG bytes and returns Seed markup that reproduces the image.
+/// This is the reverse of rendering: image -> code.
+#[wasm_bindgen(js_name = analyzePng)]
+pub fn analyze_png(png_bytes: &[u8]) -> Result<String, JsError> {
+    seed_analyze::analyze_image(png_bytes)
+        .map_err(|e| JsError::new(&format!("Image analysis error: {}", e)))
 }
 
 #[cfg(test)]
