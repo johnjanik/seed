@@ -238,8 +238,10 @@ impl<'a> StepConverter<'a> {
             Some(StepEntity::Plane(plane)) => {
                 self.tessellate_planar_face(face, plane.position, mesh)?;
             }
-            Some(StepEntity::CylindricalSurface(cyl)) => {
-                self.tessellate_cylindrical_face(face, cyl.position, cyl.radius as f32, mesh)?;
+            Some(StepEntity::CylindricalSurface(_cyl)) => {
+                // For partial cylindrical faces (like gear teeth), use edge-based tessellation
+                // Full cylinder tessellation doesn't respect boundary curves
+                self.tessellate_face_from_edges(face, mesh)?;
             }
             Some(StepEntity::SphericalSurface(sphere)) => {
                 self.tessellate_spherical_face(face, sphere.position, sphere.radius as f32, mesh)?;
