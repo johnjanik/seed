@@ -39,9 +39,23 @@ use seed_layout::{compute_layout, LayoutTree, LayoutOptions};
 
 mod canvas;
 mod types;
+mod memory;
+mod streaming;
+mod events;
+mod io;
+
+#[cfg(feature = "webgpu")]
+mod webgpu;
 
 pub use canvas::*;
 pub use types::*;
+pub use memory::*;
+pub use streaming::*;
+pub use events::*;
+pub use io::*;
+
+#[cfg(feature = "webgpu")]
+pub use webgpu::*;
 
 /// Initialize panic hook for better error messages in the browser console.
 #[wasm_bindgen(start)]
