@@ -220,6 +220,122 @@
             cursor: pointer;
         }
         .examples { margin-left: auto; }
+        /* File converter styles */
+        .converter-panel {
+            grid-column: 1 / -1;
+            background: #16162a;
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 8px;
+        }
+        .converter-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .converter-header h2 {
+            font-size: 1rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .converter-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+        }
+        .converter-section {
+            background: #1e1e3a;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .converter-section h3 {
+            font-size: 0.75rem;
+            color: #667eea;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+        .drop-zone {
+            border: 2px dashed #3d3d54;
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+        }
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.1);
+        }
+        .drop-zone-text { color: #888; font-size: 0.875rem; }
+        .drop-zone-formats { color: #555; font-size: 0.75rem; margin-top: 8px; }
+        .file-info {
+            background: #2d2d44;
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 12px;
+            display: none;
+        }
+        .file-info.visible { display: block; }
+        .file-info-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            padding: 4px 0;
+        }
+        .file-info-label { color: #888; }
+        .file-info-value { color: #e0e0e0; font-family: monospace; }
+        .format-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        .format-seed { background: #2d5a3d; color: #4ade80; }
+        .format-gltf { background: #3d4a5a; color: #60a5fa; }
+        .format-step { background: #5a4a3d; color: #fbbf24; }
+        .format-usd { background: #5a3d5a; color: #c084fc; }
+        .convert-options {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .convert-options select {
+            padding: 10px 12px;
+            border: none;
+            border-radius: 6px;
+            background: #2d2d44;
+            color: #ccc;
+            font-size: 0.875rem;
+        }
+        .scene-stats {
+            font-size: 0.8rem;
+        }
+        .scene-stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .stat-box {
+            background: #2d2d44;
+            border-radius: 6px;
+            padding: 12px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #667eea;
+        }
+        .stat-label {
+            font-size: 0.7rem;
+            color: #888;
+            text-transform: uppercase;
+        }
         .error-message {
             padding: 16px;
             background: #3a1e1e;
@@ -313,6 +429,80 @@
                     <option value="nested">Nested Frames</option>
                     <option value="gradient">Gradients</option>
                 </select>
+            </div>
+        </div>
+
+        <!-- File Converter Panel -->
+        <div class="converter-panel">
+            <div class="converter-header">
+                <h2>3D File Converter</h2>
+                <span id="converter-status" class="status">Ready</span>
+            </div>
+            <div class="converter-content">
+                <!-- Import Section -->
+                <div class="converter-section">
+                    <h3>Import</h3>
+                    <div class="drop-zone" id="drop-zone">
+                        <div class="drop-zone-text">Drop a 3D file here or click to browse</div>
+                        <div class="drop-zone-formats">Supports: glTF, GLB, STEP, USD, Seed</div>
+                    </div>
+                    <input type="file" id="file-input-3d" accept=".gltf,.glb,.step,.stp,.usda,.usdc,.usd,.seed" style="display:none;">
+                    <div class="file-info" id="file-info">
+                        <div class="file-info-row">
+                            <span class="file-info-label">File:</span>
+                            <span class="file-info-value" id="file-name">-</span>
+                        </div>
+                        <div class="file-info-row">
+                            <span class="file-info-label">Size:</span>
+                            <span class="file-info-value" id="file-size">-</span>
+                        </div>
+                        <div class="file-info-row">
+                            <span class="file-info-label">Format:</span>
+                            <span class="file-info-value"><span id="file-format" class="format-badge">-</span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Scene Info Section -->
+                <div class="converter-section">
+                    <h3>Scene Info</h3>
+                    <div class="scene-stats" id="scene-stats">
+                        <div class="scene-stats-grid">
+                            <div class="stat-box">
+                                <div class="stat-value" id="stat-nodes">-</div>
+                                <div class="stat-label">Nodes</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value" id="stat-geometries">-</div>
+                                <div class="stat-label">Geometries</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value" id="stat-materials">-</div>
+                                <div class="stat-label">Materials</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value" id="stat-roots">-</div>
+                                <div class="stat-label">Roots</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Export Section -->
+                <div class="converter-section">
+                    <h3>Export</h3>
+                    <div class="convert-options">
+                        <select id="export-format">
+                            <option value="">Select format...</option>
+                            <option value="seed">Seed (.seed)</option>
+                            <option value="gltf">glTF 2.0 (.glb)</option>
+                            <option value="step">STEP (.step)</option>
+                            <option value="usd">USD (.usda)</option>
+                        </select>
+                        <button class="btn-primary" id="btn-convert" disabled>Convert & Download</button>
+                    </div>
+                    <div id="convert-error" class="error-message" style="display:none; margin-top:12px; padding:8px; font-size:0.75rem;"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -793,10 +983,189 @@
             status.classList.add('ready');
 
             doRender();
+
+            // Initialize file converter
+            initFileConverter(module);
         } catch (e) {
             console.error('Load error:', e);
             status.textContent = 'Error: ' + e.message;
             status.classList.add('error');
+        }
+
+        // ============================================
+        // File Converter Functionality
+        // ============================================
+
+        let fileConverter = null;
+        let currentFileData = null;
+        let currentScene = null;
+
+        function initFileConverter(module) {
+            fileConverter = new module.FileConverter();
+
+            const converterStatus = document.getElementById('converter-status');
+            const dropZone = document.getElementById('drop-zone');
+            const fileInput3D = document.getElementById('file-input-3d');
+            const fileInfo = document.getElementById('file-info');
+            const fileName = document.getElementById('file-name');
+            const fileSize = document.getElementById('file-size');
+            const fileFormat = document.getElementById('file-format');
+            const exportFormat = document.getElementById('export-format');
+            const btnConvert = document.getElementById('btn-convert');
+            const convertError = document.getElementById('convert-error');
+
+            // Log supported formats
+            const readFormats = module.getSupportedReadFormats();
+            const writeFormats = module.getSupportedWriteFormats();
+            console.log('Supported read formats:', readFormats);
+            console.log('Supported write formats:', writeFormats);
+
+            converterStatus.textContent = 'Ready';
+            converterStatus.classList.add('ready');
+
+            // Click to browse
+            dropZone.addEventListener('click', () => fileInput3D.click());
+
+            // Drag and drop
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.classList.remove('dragover');
+            });
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                const file = e.dataTransfer.files[0];
+                if (file) handleFileImport(file);
+            });
+
+            // File input change
+            fileInput3D.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) handleFileImport(file);
+                fileInput3D.value = '';
+            });
+
+            // Export format change
+            exportFormat.addEventListener('change', () => {
+                btnConvert.disabled = !currentScene || !exportFormat.value;
+            });
+
+            // Convert button
+            btnConvert.addEventListener('click', doConvert);
+
+            async function handleFileImport(file) {
+                converterStatus.textContent = 'Reading...';
+                converterStatus.classList.remove('ready', 'error');
+                convertError.style.display = 'none';
+
+                try {
+                    const arrayBuffer = await file.arrayBuffer();
+                    currentFileData = new Uint8Array(arrayBuffer);
+
+                    // Update file info
+                    fileName.textContent = file.name;
+                    fileSize.textContent = formatFileSize(file.size);
+
+                    // Detect format
+                    const detectedFormat = module.detectFileFormat(currentFileData);
+                    if (detectedFormat) {
+                        fileFormat.textContent = detectedFormat.toUpperCase();
+                        fileFormat.className = 'format-badge format-' + detectedFormat;
+                    } else {
+                        fileFormat.textContent = 'Unknown';
+                        fileFormat.className = 'format-badge';
+                    }
+
+                    fileInfo.classList.add('visible');
+
+                    // Read and get stats
+                    converterStatus.textContent = 'Parsing...';
+                    currentScene = fileConverter.read(currentFileData);
+
+                    // Update scene stats
+                    updateSceneStats(currentScene);
+
+                    converterStatus.textContent = 'Ready';
+                    converterStatus.classList.add('ready');
+                    btnConvert.disabled = !exportFormat.value;
+
+                } catch (err) {
+                    console.error('Import error:', err);
+                    converterStatus.textContent = 'Error';
+                    converterStatus.classList.add('error');
+                    convertError.textContent = err.message || 'Failed to read file';
+                    convertError.style.display = 'block';
+                    currentScene = null;
+                    currentFileData = null;
+                    btnConvert.disabled = true;
+                }
+            }
+
+            function doConvert() {
+                if (!currentScene || !exportFormat.value) return;
+
+                converterStatus.textContent = 'Converting...';
+                converterStatus.classList.remove('ready', 'error');
+                convertError.style.display = 'none';
+
+                try {
+                    const format = exportFormat.value;
+                    const outputData = fileConverter.write(currentScene, format);
+
+                    // Determine file extension and mime type
+                    const extensions = {
+                        seed: '.seed',
+                        gltf: '.glb',
+                        step: '.step',
+                        usd: '.usda'
+                    };
+                    const mimeTypes = {
+                        seed: 'text/plain',
+                        gltf: 'model/gltf-binary',
+                        step: 'application/step',
+                        usd: 'text/plain'
+                    };
+
+                    const ext = extensions[format] || '.bin';
+                    const mime = mimeTypes[format] || 'application/octet-stream';
+                    const baseName = fileName.textContent.replace(/\.[^.]+$/, '');
+
+                    // Download
+                    const blob = new Blob([outputData], { type: mime });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = baseName + ext;
+                    a.click();
+                    URL.revokeObjectURL(url);
+
+                    converterStatus.textContent = 'Ready';
+                    converterStatus.classList.add('ready');
+
+                } catch (err) {
+                    console.error('Convert error:', err);
+                    converterStatus.textContent = 'Error';
+                    converterStatus.classList.add('error');
+                    convertError.textContent = err.message || 'Conversion failed';
+                    convertError.style.display = 'block';
+                }
+            }
+
+            function updateSceneStats(scene) {
+                document.getElementById('stat-nodes').textContent = scene.nodes?.length || 0;
+                document.getElementById('stat-geometries').textContent = scene.geometries?.length || 0;
+                document.getElementById('stat-materials').textContent = scene.materials?.length || 0;
+                document.getElementById('stat-roots').textContent = scene.roots?.length || 0;
+            }
+
+            function formatFileSize(bytes) {
+                if (bytes < 1024) return bytes + ' B';
+                if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+                return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+            }
         }
     </script>
 </body>
