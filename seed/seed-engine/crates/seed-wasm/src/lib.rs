@@ -475,13 +475,13 @@ pub fn get_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Analyze a PNG image and generate Seed source code.
+/// Analyze an image and generate Seed source code.
 ///
-/// Takes raw PNG bytes and returns Seed markup that reproduces the image.
+/// Takes raw image bytes (PNG, JPEG, GIF, WebP) and returns Seed markup.
 /// This is the reverse of rendering: image -> code.
-#[wasm_bindgen(js_name = analyzePng)]
-pub fn analyze_png(png_bytes: &[u8]) -> Result<String, JsError> {
-    seed_analyze::analyze_image(png_bytes)
+#[wasm_bindgen(js_name = analyzeImage)]
+pub fn analyze_image(image_bytes: &[u8]) -> Result<String, JsError> {
+    seed_analyze::analyze_image(image_bytes)
         .map_err(|e| JsError::new(&format!("Image analysis error: {}", e)))
 }
 

@@ -784,9 +784,9 @@
                 // Analyze image using Rust WASM analyzer
                 if (wasmModule) {
                     status.textContent = 'Analyzing image...';
-                    const pngBytes = new Uint8Array(arrayBuffer);
+                    const imageBytes = new Uint8Array(arrayBuffer);
                     try {
-                        const seedCode = wasmModule.analyzePng(pngBytes);
+                        const seedCode = wasmModule.analyzeImage(imageBytes);
                         editor.value = seedCode;
                         status.textContent = 'Ready';
                         status.classList.remove('error');

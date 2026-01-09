@@ -9,7 +9,7 @@ description = "Image analysis and Seed code generation for the Seed rendering en
 
 [dependencies]
 # Image processing
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 # Math
 glam.workspace = true
