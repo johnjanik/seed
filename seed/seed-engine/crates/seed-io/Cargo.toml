@@ -1,0 +1,43 @@
+[package]
+name = "seed-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Universal file I/O for Seed design documents"
+
+[dependencies]
+# Internal crates
+seed-core = { workspace = true }
+seed-parser = { workspace = true }
+
+# Parsing
+nom = { workspace = true }
+
+# Math
+glam = { workspace = true, features = ["serde"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Data structures
+indexmap = { workspace = true, features = ["serde"] }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Compression and encoding
+base64 = "0.22"
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+insta = { workspace = true }
+
+[features]
+default = ["seed", "step", "gltf", "usd"]
+seed = []
+step = []
+gltf = []
+usd = []
