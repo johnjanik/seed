@@ -48,19 +48,86 @@ impl<'a> Parser<'a> {
     /// Parse the full document.
     fn parse_document(&mut self) -> Result<Document, ParseError> {
         let mut elements = Vec::new();
+        let mut meta = None;
 
-        while self.current().is_some() {
+        while let Some(line) = self.current() {
+            let content = line.content;
+            let base_indent = line.indent;
+
+            // Parse @meta block
+            if content.starts_with("@meta") {
+                meta = Some(self.parse_meta_block()?);
+                continue;
+            }
+
+            // Parse @tokens block (skip for now)
+            if content.starts_with("@tokens") {
+                self.skip_block(base_indent);
+                continue;
+            }
+
+            // Parse element
             if let Some(elem) = self.parse_element(0)? {
                 elements.push(elem);
+            } else {
+                // Skip unrecognized lines to prevent infinite loops
+                self.advance();
             }
         }
 
         Ok(Document {
-            meta: None,
+            meta,
             tokens: None,
             elements,
             span: Span::default(),
         })
+    }
+
+    /// Parse @meta block
+    fn parse_meta_block(&mut self) -> Result<MetaBlock, ParseError> {
+        let line = self.current().ok_or(ParseError::UnexpectedEof)?;
+        let base_indent = line.indent;
+        self.advance();
+
+        let mut profile = Profile::Seed2D;
+        let mut version = None;
+
+        // Parse properties inside @meta
+        while let Some(line) = self.current() {
+            if line.indent <= base_indent {
+                break;
+            }
+
+            let content = line.content.trim();
+            if let Some(val) = content.strip_prefix("profile:") {
+                let val = val.trim();
+                if val == "Seed/3D" {
+                    profile = Profile::Seed3D;
+                } else {
+                    profile = Profile::Seed2D;
+                }
+            } else if let Some(val) = content.strip_prefix("version:") {
+                version = Some(val.trim().to_string());
+            }
+            self.advance();
+        }
+
+        Ok(MetaBlock {
+            profile,
+            version,
+            span: Span::default(),
+        })
+    }
+
+    /// Skip a block at or deeper than the given indent level
+    fn skip_block(&mut self, base_indent: usize) {
+        self.advance(); // Skip the header line
+        while let Some(line) = self.current() {
+            if line.indent <= base_indent {
+                break;
+            }
+            self.advance();
+        }
     }
 
     /// Parse an element at the given minimum indentation level.
@@ -95,6 +162,11 @@ impl<'a> Parser<'a> {
         // Try to parse as Icon
         if content.starts_with("Icon ") || content == "Icon:" {
             return self.parse_icon_element().map(|i| Some(Element::Icon(i)));
+        }
+
+        // Try to parse as Part (3D geometry)
+        if content.starts_with("Part ") || content == "Part:" {
+            return self.parse_part_element().map(|p| Some(Element::Part(p)));
         }
 
         Ok(None)
@@ -432,6 +504,58 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse a Part element (3D geometry).
+    fn parse_part_element(&mut self) -> Result<PartElement, ParseError> {
+        let line = self.current().ok_or(ParseError::UnexpectedEof)?;
+        let base_indent = line.indent;
+        let content = line.content;
+        let line_num = line.line_number;
+
+        let name = parse_element_header(content, "Part")
+            .map_err(|_| ParseError::UnexpectedToken {
+                found: content.to_string(),
+                expected: "Part element".to_string(),
+                line: line_num as u32,
+                column: 1,
+            })?;
+
+        self.advance();
+
+        let body = self.parse_element_body(base_indent)?;
+
+        // Extract geometry from properties (required)
+        let geometry = body.properties.iter()
+            .find(|p| p.name == "geometry")
+            .and_then(|p| match &p.value {
+                PropertyValue::String(s) => parse_geometry(s).ok(),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                // Default to a unit box if no geometry specified
+                Geometry::Primitive(Primitive::Box {
+                    width: Length::mm(100.0),
+                    height: Length::mm(100.0),
+                    depth: Length::mm(100.0),
+                })
+            });
+
+        // Filter out geometry property from other properties
+        let other_properties: Vec<_> = body.properties.into_iter()
+            .filter(|p| p.name != "geometry")
+            .collect();
+
+        Ok(PartElement {
+            name: name.map(|s| Identifier(s.to_string())),
+            geometry,
+            properties: other_properties,
+            constraints: body.constraints,
+            span: Span {
+                line: line_num as u32,
+                ..Default::default()
+            },
+        })
+    }
+
     /// Parse the body of an element (properties, constraints, children).
     fn parse_element_body(&mut self, parent_indent: usize) -> Result<ElementBody, ParseError> {
         let mut properties = Vec::new();
@@ -463,7 +587,9 @@ impl<'a> Parser<'a> {
 
             // Check for child element
             if content.starts_with("Frame ") || content.starts_with("Text ") || content.starts_with("Svg ")
-               || content == "Frame:" || content == "Text:" || content == "Svg:" {
+               || content.starts_with("Image ") || content.starts_with("Icon ") || content.starts_with("Part ")
+               || content == "Frame:" || content == "Text:" || content == "Svg:"
+               || content == "Image:" || content == "Icon:" || content == "Part:" {
                 if let Some(elem) = self.parse_element(child_indent)? {
                     children.push(elem);
                 }
@@ -2198,6 +2324,73 @@ fn parse_icon_source(s: &str) -> IconSource {
     }
 }
 
+/// Parse a geometry value string into a Geometry type.
+/// Supports: Box(w, h, d), Sphere(r), Cylinder(r, h)
+fn parse_geometry(s: &str) -> Result<Geometry, ParseError> {
+    let s = s.trim();
+
+    // Parse Box(width, height, depth)
+    if let Some(args) = s.strip_prefix("Box(").and_then(|s| s.strip_suffix(')')) {
+        let parts: Vec<&str> = args.split(',').map(|p| p.trim()).collect();
+        if parts.len() == 3 {
+            let width = parse_geometry_length(parts[0])?;
+            let height = parse_geometry_length(parts[1])?;
+            let depth = parse_geometry_length(parts[2])?;
+            return Ok(Geometry::Primitive(Primitive::Box { width, height, depth }));
+        }
+    }
+
+    // Parse Sphere(radius)
+    if let Some(args) = s.strip_prefix("Sphere(").and_then(|s| s.strip_suffix(')')) {
+        let radius = parse_geometry_length(args.trim())?;
+        return Ok(Geometry::Primitive(Primitive::Sphere { radius }));
+    }
+
+    // Parse Cylinder(radius, height)
+    if let Some(args) = s.strip_prefix("Cylinder(").and_then(|s| s.strip_suffix(')')) {
+        let parts: Vec<&str> = args.split(',').map(|p| p.trim()).collect();
+        if parts.len() == 2 {
+            let radius = parse_geometry_length(parts[0])?;
+            let height = parse_geometry_length(parts[1])?;
+            return Ok(Geometry::Primitive(Primitive::Cylinder { radius, height }));
+        }
+    }
+
+    // Default: couldn't parse
+    Err(ParseError::UnexpectedToken {
+        found: s.to_string(),
+        expected: "geometry (Box, Sphere, or Cylinder)".to_string(),
+        line: 0,
+        column: 0,
+    })
+}
+
+/// Parse a length value for geometry (e.g., "100mm", "50px").
+fn parse_geometry_length(s: &str) -> Result<Length, ParseError> {
+    let s = s.trim();
+
+    // Try to parse number with unit
+    if let Ok((rest, (num, unit_str))) = parse_number_with_unit(s) {
+        if rest.is_empty() || rest.chars().all(|c| c.is_whitespace()) {
+            return Ok(make_length(num, unit_str));
+        }
+    }
+
+    // Try to parse just a number (assume mm for geometry)
+    if let Ok((rest, num)) = number(s) {
+        if rest.is_empty() || rest.chars().all(|c| c.is_whitespace()) {
+            return Ok(Length::mm(num));
+        }
+    }
+
+    Err(ParseError::UnexpectedToken {
+        found: s.to_string(),
+        expected: "length value".to_string(),
+        line: 0,
+        column: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2866,6 +3059,198 @@ mod tests {
             }
         } else {
             panic!("Expected Frame element");
+        }
+    }
+
+    // Part element tests
+
+    #[test]
+    fn test_parse_part_box() {
+        let input = r#"Part MyBox:
+  geometry: Box(100mm, 50mm, 25mm)
+  color: #ff0000
+"#;
+        let doc = parse(input).unwrap();
+        assert_eq!(doc.elements.len(), 1);
+
+        if let Element::Part(part) = &doc.elements[0] {
+            assert_eq!(part.name.as_ref().unwrap().0, "MyBox");
+            if let Geometry::Primitive(Primitive::Box { width, height, depth }) = &part.geometry {
+                assert_eq!(width.value, 100.0);
+                assert_eq!(width.unit, LengthUnit::Mm);
+                assert_eq!(height.value, 50.0);
+                assert_eq!(depth.value, 25.0);
+            } else {
+                panic!("Expected Box geometry");
+            }
+            // color property should be preserved
+            assert!(part.properties.iter().any(|p| p.name == "color"));
+        } else {
+            panic!("Expected Part element");
+        }
+    }
+
+    #[test]
+    fn test_parse_part_sphere() {
+        let input = r#"Part Ball:
+  geometry: Sphere(50mm)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Part(part) = &doc.elements[0] {
+            assert_eq!(part.name.as_ref().unwrap().0, "Ball");
+            if let Geometry::Primitive(Primitive::Sphere { radius }) = &part.geometry {
+                assert_eq!(radius.value, 50.0);
+                assert_eq!(radius.unit, LengthUnit::Mm);
+            } else {
+                panic!("Expected Sphere geometry");
+            }
+        } else {
+            panic!("Expected Part element");
+        }
+    }
+
+    #[test]
+    fn test_parse_part_cylinder() {
+        let input = r#"Part Tube:
+  geometry: Cylinder(10mm, 100mm)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Part(part) = &doc.elements[0] {
+            assert_eq!(part.name.as_ref().unwrap().0, "Tube");
+            if let Geometry::Primitive(Primitive::Cylinder { radius, height }) = &part.geometry {
+                assert_eq!(radius.value, 10.0);
+                assert_eq!(height.value, 100.0);
+            } else {
+                panic!("Expected Cylinder geometry");
+            }
+        } else {
+            panic!("Expected Part element");
+        }
+    }
+
+    #[test]
+    fn test_parse_part_nested_in_frame() {
+        let input = r#"Frame Assembly:
+  Part Bolt:
+    geometry: Cylinder(5mm, 20mm)
+  Part Washer:
+    geometry: Cylinder(10mm, 2mm)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Frame(frame) = &doc.elements[0] {
+            assert_eq!(frame.name.as_ref().unwrap().0, "Assembly");
+            assert_eq!(frame.children.len(), 2);
+
+            if let Element::Part(bolt) = &frame.children[0] {
+                assert_eq!(bolt.name.as_ref().unwrap().0, "Bolt");
+            } else {
+                panic!("Expected Part element for Bolt");
+            }
+
+            if let Element::Part(washer) = &frame.children[1] {
+                assert_eq!(washer.name.as_ref().unwrap().0, "Washer");
+            } else {
+                panic!("Expected Part element for Washer");
+            }
+        } else {
+            panic!("Expected Frame element");
+        }
+    }
+
+    #[test]
+    fn test_parse_part_without_name() {
+        let input = r#"Part:
+  geometry: Box(10mm, 10mm, 10mm)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Part(part) = &doc.elements[0] {
+            assert!(part.name.is_none());
+            assert!(matches!(part.geometry, Geometry::Primitive(Primitive::Box { .. })));
+        } else {
+            panic!("Expected Part element");
+        }
+    }
+
+    #[test]
+    fn test_parse_geometry_with_px_units() {
+        let input = r#"Part:
+  geometry: Box(100px, 50px, 25px)
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Part(part) = &doc.elements[0] {
+            if let Geometry::Primitive(Primitive::Box { width, .. }) = &part.geometry {
+                assert_eq!(width.value, 100.0);
+                assert_eq!(width.unit, LengthUnit::Px);
+            } else {
+                panic!("Expected Box geometry");
+            }
+        } else {
+            panic!("Expected Part element");
+        }
+    }
+
+    #[test]
+    fn test_parse_just_meta() {
+        let input = r#"@meta:
+  profile: Seed/3D
+  version: 1.0
+"#;
+        let doc = parse(input).unwrap();
+        assert!(doc.meta.is_some());
+        let meta = doc.meta.unwrap();
+        assert_eq!(meta.profile, Profile::Seed3D);
+        assert_eq!(meta.version.as_ref().unwrap(), "1.0");
+    }
+
+    #[test]
+    fn test_parse_part_with_color_property() {
+        // Test that Part can have a color property after geometry
+        let input = r#"Part RedBox:
+  geometry: Box(100mm, 50mm, 20mm)
+  color: #ff0000
+"#;
+        let doc = parse(input).unwrap();
+        assert_eq!(doc.elements.len(), 1);
+
+        if let Element::Part(part) = &doc.elements[0] {
+            assert_eq!(part.name.as_ref().unwrap().0, "RedBox");
+            // Check properties
+            let color_prop = part.properties.iter().find(|p| p.name == "color");
+            assert!(color_prop.is_some(), "Should have color property");
+        } else {
+            panic!("Expected Part element");
+        }
+    }
+
+    #[test]
+    fn test_parse_full_document_with_meta_and_part() {
+        let input = r#"@meta:
+  profile: Seed/3D
+  version: 1.0
+
+Part RedBox:
+  geometry: Box(100mm, 50mm, 20mm)
+  color: #ff0000
+"#;
+        let doc = parse(input).unwrap();
+
+        // Verify meta
+        assert!(doc.meta.is_some());
+        let meta = doc.meta.unwrap();
+        assert_eq!(meta.profile, Profile::Seed3D);
+        assert_eq!(meta.version.as_ref().unwrap(), "1.0");
+
+        // Verify element
+        assert_eq!(doc.elements.len(), 1);
+        if let Element::Part(part) = &doc.elements[0] {
+            assert_eq!(part.name.as_ref().unwrap().0, "RedBox");
+        } else {
+            panic!("Expected Part element");
         }
     }
 }
