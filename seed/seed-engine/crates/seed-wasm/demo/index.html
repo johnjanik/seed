@@ -366,10 +366,18 @@
         }
         .viewer-3d-controls {
             display: flex;
-            gap: 8px;
+            gap: 12px;
             align-items: center;
             font-size: 0.7rem;
             color: #888;
+        }
+        .viewer-3d-controls select {
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            background: #2d2d44;
+            color: #ccc;
+            font-size: 0.7rem;
         }
         .viewer-3d-canvas {
             width: 100%;
@@ -549,11 +557,16 @@
                 <div class="viewer-3d-header">
                     <h3>3D Preview</h3>
                     <div class="viewer-3d-controls">
-                        <label><input type="checkbox" id="wireframe-mode" checked> Wireframe</label>
+                        <select id="renderer-mode">
+                            <option value="webgl">WebGL</option>
+                            <option value="canvas2d">Canvas 2D</option>
+                        </select>
+                        <label><input type="checkbox" id="wireframe-mode"> Wireframe</label>
                         <label><input type="checkbox" id="auto-rotate"> Auto-rotate</label>
                     </div>
                 </div>
                 <canvas id="canvas-3d" class="viewer-3d-canvas"></canvas>
+                <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none;"></canvas>
                 <div class="viewer-3d-info">
                     <span id="mesh-info">Drag to rotate, scroll to zoom</span>
                 </div>
@@ -1249,52 +1262,325 @@
         }
 
         // ============================================
-        // 3D Viewer
+        // 3D Viewer (WebGL + Canvas 2D fallback)
         // ============================================
 
         const canvas3d = document.getElementById('canvas-3d');
+        const canvas3dWebGL = document.getElementById('canvas-3d-webgl');
         const ctx3d = canvas3d.getContext('2d');
         const viewer3d = document.getElementById('viewer-3d');
         const meshInfo = document.getElementById('mesh-info');
         const wireframeMode = document.getElementById('wireframe-mode');
         const autoRotate = document.getElementById('auto-rotate');
+        const rendererMode = document.getElementById('renderer-mode');
 
         let meshData = null;
         let rotationX = -0.5;
         let rotationY = 0.3;
         let zoom = 1.0;
-        let isDragging = false;
+        let isDragging3d = false;
         let lastMouseX = 0;
         let lastMouseY = 0;
         let animationId = null;
 
-        // Load and render mesh when file is imported
-        async function loadMeshForViewer() {
-            if (!fileConverter || !currentFileData) return;
+        // WebGL state
+        let gl = null;
+        let glProgram = null;
+        let glProgramWireframe = null;
+        let glPositionBuffer = null;
+        let glNormalBuffer = null;
+        let glIndexBuffer = null;
+        let glWireframeIndexBuffer = null;
+        let glVertexCount = 0;
+        let glWireframeIndexCount = 0;
+        let webglAvailable = false;
 
-            try {
-                meshData = fileConverter.getMeshData(currentFileData);
-                if (meshData && meshData.positions.length > 0) {
-                    viewer3d.style.display = 'block';
-                    const vertCount = meshData.positions.length / 3;
-                    const triCount = meshData.indices.length / 3;
-                    meshInfo.textContent = `${vertCount.toLocaleString()} vertices, ${triCount.toLocaleString()} triangles`;
-                    resizeCanvas3d();
-                    render3d();
+        // WebGL shaders
+        const vertexShaderSource = `
+            attribute vec3 aPosition;
+            attribute vec3 aNormal;
+            uniform mat4 uModelView;
+            uniform mat4 uProjection;
+            uniform mat3 uNormalMatrix;
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            void main() {
+                vec4 mvPosition = uModelView * vec4(aPosition, 1.0);
+                gl_Position = uProjection * mvPosition;
+                vPosition = mvPosition.xyz;
+                vNormal = uNormalMatrix * aNormal;
+            }
+        `;
+
+        const fragmentShaderSource = `
+            precision mediump float;
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            uniform vec3 uLightDir;
+            uniform vec3 uBaseColor;
+            uniform bool uWireframe;
+            void main() {
+                if (uWireframe) {
+                    gl_FragColor = vec4(0.4, 0.5, 0.92, 1.0);
+                } else {
+                    vec3 normal = normalize(vNormal);
+                    float diffuse = max(dot(normal, uLightDir), 0.0);
+                    float ambient = 0.3;
+                    vec3 color = uBaseColor * (ambient + diffuse * 0.7);
+                    gl_FragColor = vec4(color, 1.0);
                 }
-            } catch (err) {
-                console.error('Mesh load error:', err);
+            }
+        `;
+
+        // Initialize WebGL
+        function initWebGL() {
+            gl = canvas3dWebGL.getContext('webgl', { antialias: true, alpha: false });
+            if (!gl) {
+                console.warn('WebGL not available, using Canvas 2D');
+                rendererMode.value = 'canvas2d';
+                rendererMode.querySelector('option[value="webgl"]').disabled = true;
+                return false;
+            }
+
+            // Compile shaders
+            const vs = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vs, vertexShaderSource);
+            gl.compileShader(vs);
+            if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+                console.error('Vertex shader error:', gl.getShaderInfoLog(vs));
+                return false;
+            }
+
+            const fs = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fs, fragmentShaderSource);
+            gl.compileShader(fs);
+            if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+                console.error('Fragment shader error:', gl.getShaderInfoLog(fs));
+                return false;
+            }
+
+            // Link program
+            glProgram = gl.createProgram();
+            gl.attachShader(glProgram, vs);
+            gl.attachShader(glProgram, fs);
+            gl.linkProgram(glProgram);
+            if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
+                console.error('Program link error:', gl.getProgramInfoLog(glProgram));
+                return false;
+            }
+
+            // Create buffers
+            glPositionBuffer = gl.createBuffer();
+            glNormalBuffer = gl.createBuffer();
+            glIndexBuffer = gl.createBuffer();
+            glWireframeIndexBuffer = gl.createBuffer();
+
+            gl.enable(gl.DEPTH_TEST);
+            gl.enable(gl.CULL_FACE);
+            gl.cullFace(gl.BACK);
+            gl.clearColor(0.04, 0.04, 0.08, 1.0);
+
+            webglAvailable = true;
+            console.log('WebGL initialized successfully');
+            return true;
+        }
+
+        // Upload mesh to GPU
+        function uploadMeshToGPU() {
+            if (!gl || !meshData) return;
+
+            const positions = meshData.positions;
+            const indices = meshData.indices;
+
+            // Compute normals
+            const normals = new Float32Array(positions.length);
+            for (let i = 0; i < indices.length; i += 3) {
+                const i0 = indices[i], i1 = indices[i + 1], i2 = indices[i + 2];
+                const p0 = [positions[i0 * 3], positions[i0 * 3 + 1], positions[i0 * 3 + 2]];
+                const p1 = [positions[i1 * 3], positions[i1 * 3 + 1], positions[i1 * 3 + 2]];
+                const p2 = [positions[i2 * 3], positions[i2 * 3 + 1], positions[i2 * 3 + 2]];
+
+                const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2];
+                const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
+                const nx = ay * bz - az * by;
+                const ny = az * bx - ax * bz;
+                const nz = ax * by - ay * bx;
+
+                for (const idx of [i0, i1, i2]) {
+                    normals[idx * 3] += nx;
+                    normals[idx * 3 + 1] += ny;
+                    normals[idx * 3 + 2] += nz;
+                }
+            }
+
+            // Normalize
+            for (let i = 0; i < normals.length; i += 3) {
+                const len = Math.sqrt(normals[i] ** 2 + normals[i + 1] ** 2 + normals[i + 2] ** 2);
+                if (len > 0) {
+                    normals[i] /= len;
+                    normals[i + 1] /= len;
+                    normals[i + 2] /= len;
+                }
+            }
+
+            // Upload position buffer
+            gl.bindBuffer(gl.ARRAY_BUFFER, glPositionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+            // Upload normal buffer
+            gl.bindBuffer(gl.ARRAY_BUFFER, glNormalBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+
+            // Upload index buffer
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glIndexBuffer);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(indices), gl.STATIC_DRAW);
+            glVertexCount = indices.length;
+
+            // Create wireframe indices (line pairs for each triangle edge)
+            const wireframeIndices = [];
+            const edgeSet = new Set();
+            for (let i = 0; i < indices.length; i += 3) {
+                const edges = [
+                    [indices[i], indices[i + 1]],
+                    [indices[i + 1], indices[i + 2]],
+                    [indices[i + 2], indices[i]]
+                ];
+                for (const [a, b] of edges) {
+                    const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+                    if (!edgeSet.has(key)) {
+                        edgeSet.add(key);
+                        wireframeIndices.push(a, b);
+                    }
+                }
+            }
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glWireframeIndexBuffer);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(wireframeIndices), gl.STATIC_DRAW);
+            glWireframeIndexCount = wireframeIndices.length;
+
+            // Enable OES_element_index_uint for large meshes
+            gl.getExtension('OES_element_index_uint');
+        }
+
+        // Matrix utilities
+        function mat4Perspective(fov, aspect, near, far) {
+            const f = 1.0 / Math.tan(fov / 2);
+            return new Float32Array([
+                f / aspect, 0, 0, 0,
+                0, f, 0, 0,
+                0, 0, (far + near) / (near - far), -1,
+                0, 0, (2 * far * near) / (near - far), 0
+            ]);
+        }
+
+        function mat4Identity() {
+            return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+        }
+
+        function mat4Multiply(a, b) {
+            const out = new Float32Array(16);
+            for (let i = 0; i < 4; i++) {
+                for (let j = 0; j < 4; j++) {
+                    out[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] +
+                                     a[i * 4 + 2] * b[8 + j] + a[i * 4 + 3] * b[12 + j];
+                }
+            }
+            return out;
+        }
+
+        function mat4RotateX(m, angle) {
+            const c = Math.cos(angle), s = Math.sin(angle);
+            const r = new Float32Array([1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1]);
+            return mat4Multiply(m, r);
+        }
+
+        function mat4RotateY(m, angle) {
+            const c = Math.cos(angle), s = Math.sin(angle);
+            const r = new Float32Array([c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1]);
+            return mat4Multiply(m, r);
+        }
+
+        function mat4Translate(m, x, y, z) {
+            const t = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1]);
+            return mat4Multiply(m, t);
+        }
+
+        function mat4Scale(m, s) {
+            const sc = new Float32Array([s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1]);
+            return mat4Multiply(m, sc);
+        }
+
+        function mat3FromMat4(m) {
+            return new Float32Array([m[0],m[1],m[2], m[4],m[5],m[6], m[8],m[9],m[10]]);
+        }
+
+        // WebGL render
+        function renderWebGL() {
+            if (!gl || !meshData || !webglAvailable) return;
+
+            const w = canvas3dWebGL.width;
+            const h = canvas3dWebGL.height;
+            gl.viewport(0, 0, w, h);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            gl.useProgram(glProgram);
+
+            // Compute model-view matrix
+            const min = meshData.bounds_min;
+            const max = meshData.bounds_max;
+            const cx = (min[0] + max[0]) / 2;
+            const cy = (min[1] + max[1]) / 2;
+            const cz = (min[2] + max[2]) / 2;
+            const size = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+            const scale = 2.0 / size * zoom;
+
+            let mv = mat4Identity();
+            mv = mat4Translate(mv, 0, 0, -3);
+            mv = mat4RotateX(mv, rotationX);
+            mv = mat4RotateY(mv, rotationY);
+            mv = mat4Scale(mv, scale);
+            mv = mat4Translate(mv, -cx, -cy, -cz);
+
+            const proj = mat4Perspective(Math.PI / 4, w / h, 0.1, 100);
+            const normalMatrix = mat3FromMat4(mv);
+
+            // Set uniforms
+            gl.uniformMatrix4fv(gl.getUniformLocation(glProgram, 'uModelView'), false, mv);
+            gl.uniformMatrix4fv(gl.getUniformLocation(glProgram, 'uProjection'), false, proj);
+            gl.uniformMatrix3fv(gl.getUniformLocation(glProgram, 'uNormalMatrix'), false, normalMatrix);
+            gl.uniform3fv(gl.getUniformLocation(glProgram, 'uLightDir'), [0.5, 0.7, 1.0]);
+            gl.uniform3fv(gl.getUniformLocation(glProgram, 'uBaseColor'), [0.4, 0.5, 0.9]);
+            gl.uniform1i(gl.getUniformLocation(glProgram, 'uWireframe'), wireframeMode.checked ? 1 : 0);
+
+            // Bind attributes
+            const aPosition = gl.getAttribLocation(glProgram, 'aPosition');
+            gl.bindBuffer(gl.ARRAY_BUFFER, glPositionBuffer);
+            gl.enableVertexAttribArray(aPosition);
+            gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
+
+            const aNormal = gl.getAttribLocation(glProgram, 'aNormal');
+            gl.bindBuffer(gl.ARRAY_BUFFER, glNormalBuffer);
+            gl.enableVertexAttribArray(aNormal);
+            gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 0, 0);
+
+            if (wireframeMode.checked) {
+                gl.disable(gl.CULL_FACE);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glWireframeIndexBuffer);
+                gl.drawElements(gl.LINES, glWireframeIndexCount, gl.UNSIGNED_INT, 0);
+            } else {
+                gl.enable(gl.CULL_FACE);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glIndexBuffer);
+                gl.drawElements(gl.TRIANGLES, glVertexCount, gl.UNSIGNED_INT, 0);
+            }
+
+            // Auto-rotate
+            if (autoRotate.checked) {
+                rotationY += 0.01;
+                animationId = requestAnimationFrame(render3d);
             }
         }
 
-        function resizeCanvas3d() {
-            const rect = canvas3d.getBoundingClientRect();
-            canvas3d.width = rect.width * window.devicePixelRatio;
-            canvas3d.height = rect.height * window.devicePixelRatio;
-            ctx3d.scale(window.devicePixelRatio, window.devicePixelRatio);
-        }
-
-        function render3d() {
+        // Canvas 2D render (fallback)
+        function renderCanvas2D() {
             if (!meshData || !meshData.positions.length) return;
 
             const w = canvas3d.width / window.devicePixelRatio;
@@ -1303,7 +1589,6 @@
             ctx3d.fillStyle = '#0a0a15';
             ctx3d.fillRect(0, 0, w, h);
 
-            // Compute center and scale from bounds
             const min = meshData.bounds_min;
             const max = meshData.bounds_max;
             const cx = (min[0] + max[0]) / 2;
@@ -1312,21 +1597,15 @@
             const size = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
             const scale = (Math.min(w, h) * 0.4 * zoom) / size;
 
-            // Rotation matrices
             const cosX = Math.cos(rotationX), sinX = Math.sin(rotationX);
             const cosY = Math.cos(rotationY), sinY = Math.sin(rotationY);
 
-            // Project 3D point to 2D
             function project(x, y, z) {
-                // Center
                 x -= cx; y -= cy; z -= cz;
-                // Rotate around Y
                 const x1 = x * cosY - z * sinY;
                 const z1 = x * sinY + z * cosY;
-                // Rotate around X
                 const y1 = y * cosX - z1 * sinX;
                 const z2 = y * sinX + z1 * cosX;
-                // Project
                 return [w/2 + x1 * scale, h/2 - y1 * scale, z2];
             }
 
@@ -1334,20 +1613,16 @@
             const indices = meshData.indices;
 
             if (wireframeMode.checked) {
-                // Wireframe mode - draw edges
                 ctx3d.strokeStyle = '#667eea';
                 ctx3d.lineWidth = 0.5;
                 ctx3d.beginPath();
-
                 for (let i = 0; i < indices.length; i += 3) {
                     const i0 = indices[i] * 3;
                     const i1 = indices[i + 1] * 3;
                     const i2 = indices[i + 2] * 3;
-
                     const p0 = project(positions[i0], positions[i0 + 1], positions[i0 + 2]);
                     const p1 = project(positions[i1], positions[i1 + 1], positions[i1 + 2]);
                     const p2 = project(positions[i2], positions[i2 + 1], positions[i2 + 2]);
-
                     ctx3d.moveTo(p0[0], p0[1]);
                     ctx3d.lineTo(p1[0], p1[1]);
                     ctx3d.lineTo(p2[0], p2[1]);
@@ -1355,33 +1630,22 @@
                 }
                 ctx3d.stroke();
             } else {
-                // Solid mode with simple lighting
                 const triangles = [];
                 for (let i = 0; i < indices.length; i += 3) {
                     const i0 = indices[i] * 3;
                     const i1 = indices[i + 1] * 3;
                     const i2 = indices[i + 2] * 3;
-
                     const p0 = project(positions[i0], positions[i0 + 1], positions[i0 + 2]);
                     const p1 = project(positions[i1], positions[i1 + 1], positions[i1 + 2]);
                     const p2 = project(positions[i2], positions[i2 + 1], positions[i2 + 2]);
-
-                    // Compute normal for lighting
                     const ax = p1[0] - p0[0], ay = p1[1] - p0[1];
                     const bx = p2[0] - p0[0], by = p2[1] - p0[1];
                     const nz = ax * by - ay * bx;
-
-                    // Back-face culling
                     if (nz > 0) continue;
-
                     const avgZ = (p0[2] + p1[2] + p2[2]) / 3;
                     triangles.push({ p0, p1, p2, avgZ, nz });
                 }
-
-                // Sort by depth
                 triangles.sort((a, b) => a.avgZ - b.avgZ);
-
-                // Draw triangles
                 for (const tri of triangles) {
                     const brightness = Math.min(255, Math.max(50, 150 - tri.nz * 0.1));
                     ctx3d.fillStyle = `rgb(${brightness * 0.4}, ${brightness * 0.5}, ${brightness})`;
@@ -1394,45 +1658,119 @@
                 }
             }
 
-            // Auto-rotate
             if (autoRotate.checked) {
                 rotationY += 0.01;
                 animationId = requestAnimationFrame(render3d);
             }
         }
 
-        // Mouse controls
-        canvas3d.addEventListener('mousedown', (e) => {
-            isDragging = true;
-            lastMouseX = e.clientX;
-            lastMouseY = e.clientY;
-            if (animationId) cancelAnimationFrame(animationId);
-        });
+        // Main render dispatcher
+        function render3d() {
+            if (!meshData) return;
+            if (rendererMode.value === 'webgl' && webglAvailable) {
+                renderWebGL();
+            } else {
+                renderCanvas2D();
+            }
+        }
 
-        canvas3d.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const dx = e.clientX - lastMouseX;
-            const dy = e.clientY - lastMouseY;
-            rotationY += dx * 0.01;
-            rotationX += dy * 0.01;
-            lastMouseX = e.clientX;
-            lastMouseY = e.clientY;
-            render3d();
-        });
+        // Load and render mesh
+        async function loadMeshForViewer() {
+            if (!fileConverter || !currentFileData) return;
 
-        canvas3d.addEventListener('mouseup', () => { isDragging = false; });
-        canvas3d.addEventListener('mouseleave', () => { isDragging = false; });
+            try {
+                meshData = fileConverter.getMeshData(currentFileData);
+                if (meshData && meshData.positions.length > 0) {
+                    viewer3d.style.display = 'block';
+                    const vertCount = meshData.positions.length / 3;
+                    const triCount = meshData.indices.length / 3;
+                    meshInfo.textContent = `${vertCount.toLocaleString()} vertices, ${triCount.toLocaleString()} triangles`;
 
-        canvas3d.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            zoom *= e.deltaY > 0 ? 0.9 : 1.1;
-            zoom = Math.max(0.1, Math.min(10, zoom));
-            render3d();
-        });
+                    resizeCanvas3d();
+
+                    // Initialize WebGL if not done
+                    if (!gl) initWebGL();
+
+                    // Upload to GPU
+                    if (webglAvailable) {
+                        uploadMeshToGPU();
+                    }
+
+                    updateRendererVisibility();
+                    render3d();
+                }
+            } catch (err) {
+                console.error('Mesh load error:', err);
+            }
+        }
+
+        function resizeCanvas3d() {
+            const rect = canvas3d.getBoundingClientRect();
+            const dpr = window.devicePixelRatio;
+
+            // Canvas 2D
+            canvas3d.width = rect.width * dpr;
+            canvas3d.height = rect.height * dpr;
+            ctx3d.setTransform(1, 0, 0, 1, 0, 0);
+            ctx3d.scale(dpr, dpr);
+
+            // WebGL canvas
+            canvas3dWebGL.width = rect.width * dpr;
+            canvas3dWebGL.height = rect.height * dpr;
+        }
+
+        function updateRendererVisibility() {
+            const useWebGL = rendererMode.value === 'webgl' && webglAvailable;
+            canvas3d.style.display = useWebGL ? 'none' : 'block';
+            canvas3dWebGL.style.display = useWebGL ? 'block' : 'none';
+        }
+
+        // Get active canvas for mouse events
+        function getActiveCanvas() {
+            return rendererMode.value === 'webgl' && webglAvailable ? canvas3dWebGL : canvas3d;
+        }
+
+        // Mouse controls for both canvases
+        function setupMouseControls(canvasEl) {
+            canvasEl.addEventListener('mousedown', (e) => {
+                isDragging3d = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                if (animationId) cancelAnimationFrame(animationId);
+            });
+
+            canvasEl.addEventListener('mousemove', (e) => {
+                if (!isDragging3d) return;
+                const dx = e.clientX - lastMouseX;
+                const dy = e.clientY - lastMouseY;
+                rotationY += dx * 0.01;
+                rotationX += dy * 0.01;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                render3d();
+            });
+
+            canvasEl.addEventListener('mouseup', () => { isDragging3d = false; });
+            canvasEl.addEventListener('mouseleave', () => { isDragging3d = false; });
+
+            canvasEl.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                zoom *= e.deltaY > 0 ? 0.9 : 1.1;
+                zoom = Math.max(0.1, Math.min(10, zoom));
+                render3d();
+            });
+        }
+
+        setupMouseControls(canvas3d);
+        setupMouseControls(canvas3dWebGL);
 
         wireframeMode.addEventListener('change', render3d);
         autoRotate.addEventListener('change', () => {
             if (autoRotate.checked) render3d();
+        });
+        rendererMode.addEventListener('change', () => {
+            updateRendererVisibility();
+            render3d();
         });
 
         window.addEventListener('resize', () => {
