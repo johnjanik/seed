@@ -19,7 +19,7 @@ pub struct FormatRegistry {
 
 impl Default for FormatRegistry {
     fn default() -> Self {
-        Self::new()
+        Self::with_defaults()
     }
 }
 
