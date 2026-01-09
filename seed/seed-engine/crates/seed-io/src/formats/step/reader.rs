@@ -36,18 +36,32 @@ impl FormatReader for StepReader {
     }
 
     fn can_read(&self, data: &[u8]) -> bool {
-        if let Ok(text) = std::str::from_utf8(data) {
-            return text.contains("ISO-10303-21") || text.contains("FILE_DESCRIPTION");
+        // Only check the first 8KB for efficiency
+        let check_len = data.len().min(8192);
+        let check_data = &data[..check_len];
+
+        // Skip UTF-8 BOM if present
+        let check_data = if check_data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            &check_data[3..]
+        } else {
+            check_data
+        };
+
+        if let Ok(text) = std::str::from_utf8(check_data) {
+            // Check for STEP header markers (case-insensitive for ISO marker)
+            let upper = text.to_uppercase();
+            return upper.contains("ISO-10303-21") || text.contains("FILE_DESCRIPTION");
         }
         false
     }
 
     fn read(&self, data: &[u8], options: &ReadOptions) -> Result<UnifiedScene> {
-        let text = std::str::from_utf8(data)
-            .map_err(|e| IoError::parse(format!("invalid UTF-8: {}", e)))?;
+        // Use lossy conversion to handle non-UTF-8 bytes in STEP files
+        // Some CAD software includes non-standard characters
+        let text = String::from_utf8_lossy(data);
 
         // Parse the DATA section
-        let (_, entities) = parse_data_section(text)
+        let (_, entities) = parse_data_section(&text)
             .map_err(|e| IoError::parse(format!("STEP parse error: {:?}", e)))?;
 
         // Build entity graph

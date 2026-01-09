@@ -344,6 +344,46 @@
             font-size: 0.875rem;
             display: none;
         }
+        /* 3D Viewer */
+        .viewer-3d {
+            background: #0a0a15;
+            border-radius: 8px;
+            margin-top: 16px;
+            overflow: hidden;
+        }
+        .viewer-3d-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #1e1e3a;
+        }
+        .viewer-3d-header h3 {
+            font-size: 0.75rem;
+            color: #667eea;
+            text-transform: uppercase;
+            margin: 0;
+        }
+        .viewer-3d-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            font-size: 0.7rem;
+            color: #888;
+        }
+        .viewer-3d-canvas {
+            width: 100%;
+            height: 300px;
+            display: block;
+            cursor: grab;
+        }
+        .viewer-3d-canvas:active { cursor: grabbing; }
+        .viewer-3d-info {
+            padding: 6px 12px;
+            background: #1e1e3a;
+            font-size: 0.7rem;
+            color: #666;
+        }
         .info-bar {
             padding: 8px 16px;
             background: #1e1e3a;
@@ -502,6 +542,20 @@
                         <button class="btn-primary" id="btn-convert" disabled>Convert & Download</button>
                     </div>
                     <div id="convert-error" class="error-message" style="display:none; margin-top:12px; padding:8px; font-size:0.75rem;"></div>
+                </div>
+            </div>
+            <!-- 3D Viewer -->
+            <div class="viewer-3d" id="viewer-3d" style="display:none;">
+                <div class="viewer-3d-header">
+                    <h3>3D Preview</h3>
+                    <div class="viewer-3d-controls">
+                        <label><input type="checkbox" id="wireframe-mode" checked> Wireframe</label>
+                        <label><input type="checkbox" id="auto-rotate"> Auto-rotate</label>
+                    </div>
+                </div>
+                <canvas id="canvas-3d" class="viewer-3d-canvas"></canvas>
+                <div class="viewer-3d-info">
+                    <span id="mesh-info">Drag to rotate, scroll to zoom</span>
                 </div>
             </div>
         </div>
@@ -965,6 +1019,27 @@
             URL.revokeObjectURL(url);
         }
 
+        // ============================================
+        // File Converter Functionality
+        // ============================================
+
+        let fileConverter = null;
+        let currentFileData = null;
+        let currentScene = null;
+        let converterModule = null;
+
+        // Set up file converter UI immediately (before WASM loads)
+        const converterStatus = document.getElementById('converter-status');
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput3D = document.getElementById('file-input-3d');
+        const fileInfo = document.getElementById('file-info');
+        const fileName = document.getElementById('file-name');
+        const fileSize = document.getElementById('file-size');
+        const fileFormat = document.getElementById('file-format');
+        const exportFormat = document.getElementById('export-format');
+        const btnConvert = document.getElementById('btn-convert');
+        const convertError = document.getElementById('convert-error');
+
         // Load WASM
         try {
             console.log('Step 3: Loading WASM...');
@@ -992,27 +1067,52 @@
             status.classList.add('error');
         }
 
-        // ============================================
-        // File Converter Functionality
-        // ============================================
+        // Prevent browser from opening dropped files
+        document.addEventListener('dragover', (e) => e.preventDefault());
+        document.addEventListener('drop', (e) => e.preventDefault());
 
-        let fileConverter = null;
-        let currentFileData = null;
-        let currentScene = null;
+        // Click to browse - set up immediately
+        dropZone.addEventListener('click', (e) => {
+            e.stopPropagation();
+            fileInput3D.click();
+        });
+
+        // Drag and drop - set up immediately
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.add('dragover');
+        });
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+        });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file) handleFileImport(file);
+        });
+
+        // File input change
+        fileInput3D.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) handleFileImport(file);
+            fileInput3D.value = '';
+        });
+
+        // Export format change
+        exportFormat.addEventListener('change', () => {
+            btnConvert.disabled = !currentScene || !exportFormat.value;
+        });
+
+        // Convert button
+        btnConvert.addEventListener('click', doConvert);
 
         function initFileConverter(module) {
+            converterModule = module;
             fileConverter = new module.FileConverter();
-
-            const converterStatus = document.getElementById('converter-status');
-            const dropZone = document.getElementById('drop-zone');
-            const fileInput3D = document.getElementById('file-input-3d');
-            const fileInfo = document.getElementById('file-info');
-            const fileName = document.getElementById('file-name');
-            const fileSize = document.getElementById('file-size');
-            const fileFormat = document.getElementById('file-format');
-            const exportFormat = document.getElementById('export-format');
-            const btnConvert = document.getElementById('btn-convert');
-            const convertError = document.getElementById('convert-error');
 
             // Log supported formats
             const readFormats = module.getSupportedReadFormats();
@@ -1022,151 +1122,332 @@
 
             converterStatus.textContent = 'Ready';
             converterStatus.classList.add('ready');
+        }
 
-            // Click to browse
-            dropZone.addEventListener('click', () => fileInput3D.click());
+        async function handleFileImport(file) {
+            if (!fileConverter || !converterModule) {
+                convertError.textContent = 'WASM not loaded yet. Please wait...';
+                convertError.style.display = 'block';
+                return;
+            }
 
-            // Drag and drop
-            dropZone.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                dropZone.classList.add('dragover');
-            });
-            dropZone.addEventListener('dragleave', () => {
-                dropZone.classList.remove('dragover');
-            });
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                dropZone.classList.remove('dragover');
-                const file = e.dataTransfer.files[0];
-                if (file) handleFileImport(file);
-            });
+            converterStatus.textContent = 'Reading...';
+            converterStatus.classList.remove('ready', 'error');
+            convertError.style.display = 'none';
 
-            // File input change
-            fileInput3D.addEventListener('change', (e) => {
-                const file = e.target.files[0];
-                if (file) handleFileImport(file);
-                fileInput3D.value = '';
-            });
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                currentFileData = new Uint8Array(arrayBuffer);
 
-            // Export format change
-            exportFormat.addEventListener('change', () => {
-                btnConvert.disabled = !currentScene || !exportFormat.value;
-            });
+                // Debug: show first 100 bytes
+                const firstBytes = new TextDecoder().decode(currentFileData.slice(0, 100));
+                console.log('File first 100 bytes:', firstBytes);
+                console.log('File size:', currentFileData.length, 'bytes');
 
-            // Convert button
-            btnConvert.addEventListener('click', doConvert);
+                // Update file info
+                fileName.textContent = file.name;
+                fileSize.textContent = formatFileSize(file.size);
 
-            async function handleFileImport(file) {
-                converterStatus.textContent = 'Reading...';
-                converterStatus.classList.remove('ready', 'error');
-                convertError.style.display = 'none';
-
-                try {
-                    const arrayBuffer = await file.arrayBuffer();
-                    currentFileData = new Uint8Array(arrayBuffer);
-
-                    // Update file info
-                    fileName.textContent = file.name;
-                    fileSize.textContent = formatFileSize(file.size);
-
-                    // Detect format
-                    const detectedFormat = module.detectFileFormat(currentFileData);
-                    if (detectedFormat) {
-                        fileFormat.textContent = detectedFormat.toUpperCase();
-                        fileFormat.className = 'format-badge format-' + detectedFormat;
-                    } else {
-                        fileFormat.textContent = 'Unknown';
-                        fileFormat.className = 'format-badge';
-                    }
-
-                    fileInfo.classList.add('visible');
-
-                    // Read and get stats
-                    converterStatus.textContent = 'Parsing...';
-                    currentScene = fileConverter.read(currentFileData);
-
-                    // Update scene stats
-                    updateSceneStats(currentScene);
-
-                    converterStatus.textContent = 'Ready';
-                    converterStatus.classList.add('ready');
-                    btnConvert.disabled = !exportFormat.value;
-
-                } catch (err) {
-                    console.error('Import error:', err);
-                    converterStatus.textContent = 'Error';
-                    converterStatus.classList.add('error');
-                    convertError.textContent = err.message || 'Failed to read file';
-                    convertError.style.display = 'block';
-                    currentScene = null;
-                    currentFileData = null;
-                    btnConvert.disabled = true;
+                // Detect format
+                console.log('Attempting format detection...');
+                const detectedFormat = converterModule.detectFileFormat(currentFileData);
+                console.log('Detected format:', detectedFormat);
+                if (detectedFormat) {
+                    fileFormat.textContent = detectedFormat.toUpperCase();
+                    fileFormat.className = 'format-badge format-' + detectedFormat;
+                } else {
+                    fileFormat.textContent = 'Unknown';
+                    fileFormat.className = 'format-badge';
                 }
-            }
 
-            function doConvert() {
-                if (!currentScene || !exportFormat.value) return;
+                fileInfo.classList.add('visible');
 
-                converterStatus.textContent = 'Converting...';
-                converterStatus.classList.remove('ready', 'error');
-                convertError.style.display = 'none';
+                // Read and get stats
+                converterStatus.textContent = 'Parsing...';
+                currentScene = fileConverter.read(currentFileData);
 
-                try {
-                    const format = exportFormat.value;
-                    const outputData = fileConverter.write(currentScene, format);
+                // Update scene stats
+                updateSceneStats(currentScene);
 
-                    // Determine file extension and mime type
-                    const extensions = {
-                        seed: '.seed',
-                        gltf: '.glb',
-                        step: '.step',
-                        usd: '.usda'
-                    };
-                    const mimeTypes = {
-                        seed: 'text/plain',
-                        gltf: 'model/gltf-binary',
-                        step: 'application/step',
-                        usd: 'text/plain'
-                    };
+                converterStatus.textContent = 'Ready';
+                converterStatus.classList.add('ready');
+                btnConvert.disabled = !exportFormat.value;
 
-                    const ext = extensions[format] || '.bin';
-                    const mime = mimeTypes[format] || 'application/octet-stream';
-                    const baseName = fileName.textContent.replace(/\.[^.]+$/, '');
-
-                    // Download
-                    const blob = new Blob([outputData], { type: mime });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = baseName + ext;
-                    a.click();
-                    URL.revokeObjectURL(url);
-
-                    converterStatus.textContent = 'Ready';
-                    converterStatus.classList.add('ready');
-
-                } catch (err) {
-                    console.error('Convert error:', err);
-                    converterStatus.textContent = 'Error';
-                    converterStatus.classList.add('error');
-                    convertError.textContent = err.message || 'Conversion failed';
-                    convertError.style.display = 'block';
-                }
-            }
-
-            function updateSceneStats(scene) {
-                document.getElementById('stat-nodes').textContent = scene.nodes?.length || 0;
-                document.getElementById('stat-geometries').textContent = scene.geometries?.length || 0;
-                document.getElementById('stat-materials').textContent = scene.materials?.length || 0;
-                document.getElementById('stat-roots').textContent = scene.roots?.length || 0;
-            }
-
-            function formatFileSize(bytes) {
-                if (bytes < 1024) return bytes + ' B';
-                if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-                return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+            } catch (err) {
+                console.error('Import error:', err);
+                converterStatus.textContent = 'Error';
+                converterStatus.classList.add('error');
+                convertError.textContent = err.message || 'Failed to read file';
+                convertError.style.display = 'block';
+                currentScene = null;
+                currentFileData = null;
+                btnConvert.disabled = true;
             }
         }
+
+        function doConvert() {
+            if (!fileConverter || !currentScene || !exportFormat.value) return;
+
+            converterStatus.textContent = 'Converting...';
+            converterStatus.classList.remove('ready', 'error');
+            convertError.style.display = 'none';
+
+            try {
+                const format = exportFormat.value;
+                const outputData = fileConverter.write(currentScene, format);
+
+                // Determine file extension and mime type
+                const extensions = {
+                    seed: '.seed',
+                    gltf: '.glb',
+                    step: '.step',
+                    usd: '.usda'
+                };
+                const mimeTypes = {
+                    seed: 'text/plain',
+                    gltf: 'model/gltf-binary',
+                    step: 'application/step',
+                    usd: 'text/plain'
+                };
+
+                const ext = extensions[format] || '.bin';
+                const mime = mimeTypes[format] || 'application/octet-stream';
+                const baseName = fileName.textContent.replace(/\.[^.]+$/, '');
+
+                // Download
+                const blob = new Blob([outputData], { type: mime });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = baseName + ext;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                converterStatus.textContent = 'Ready';
+                converterStatus.classList.add('ready');
+
+            } catch (err) {
+                console.error('Convert error:', err);
+                converterStatus.textContent = 'Error';
+                converterStatus.classList.add('error');
+                convertError.textContent = err.message || 'Conversion failed';
+                convertError.style.display = 'block';
+            }
+        }
+
+        function updateSceneStats(scene) {
+            document.getElementById('stat-nodes').textContent = scene.nodes?.length || 0;
+            document.getElementById('stat-geometries').textContent = scene.geometries?.length || 0;
+            document.getElementById('stat-materials').textContent = scene.materials?.length || 0;
+            document.getElementById('stat-roots').textContent = scene.roots?.length || 0;
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        // ============================================
+        // 3D Viewer
+        // ============================================
+
+        const canvas3d = document.getElementById('canvas-3d');
+        const ctx3d = canvas3d.getContext('2d');
+        const viewer3d = document.getElementById('viewer-3d');
+        const meshInfo = document.getElementById('mesh-info');
+        const wireframeMode = document.getElementById('wireframe-mode');
+        const autoRotate = document.getElementById('auto-rotate');
+
+        let meshData = null;
+        let rotationX = -0.5;
+        let rotationY = 0.3;
+        let zoom = 1.0;
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        let animationId = null;
+
+        // Load and render mesh when file is imported
+        async function loadMeshForViewer() {
+            if (!fileConverter || !currentFileData) return;
+
+            try {
+                meshData = fileConverter.getMeshData(currentFileData);
+                if (meshData && meshData.positions.length > 0) {
+                    viewer3d.style.display = 'block';
+                    const vertCount = meshData.positions.length / 3;
+                    const triCount = meshData.indices.length / 3;
+                    meshInfo.textContent = `${vertCount.toLocaleString()} vertices, ${triCount.toLocaleString()} triangles`;
+                    resizeCanvas3d();
+                    render3d();
+                }
+            } catch (err) {
+                console.error('Mesh load error:', err);
+            }
+        }
+
+        function resizeCanvas3d() {
+            const rect = canvas3d.getBoundingClientRect();
+            canvas3d.width = rect.width * window.devicePixelRatio;
+            canvas3d.height = rect.height * window.devicePixelRatio;
+            ctx3d.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+
+        function render3d() {
+            if (!meshData || !meshData.positions.length) return;
+
+            const w = canvas3d.width / window.devicePixelRatio;
+            const h = canvas3d.height / window.devicePixelRatio;
+
+            ctx3d.fillStyle = '#0a0a15';
+            ctx3d.fillRect(0, 0, w, h);
+
+            // Compute center and scale from bounds
+            const min = meshData.bounds_min;
+            const max = meshData.bounds_max;
+            const cx = (min[0] + max[0]) / 2;
+            const cy = (min[1] + max[1]) / 2;
+            const cz = (min[2] + max[2]) / 2;
+            const size = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+            const scale = (Math.min(w, h) * 0.4 * zoom) / size;
+
+            // Rotation matrices
+            const cosX = Math.cos(rotationX), sinX = Math.sin(rotationX);
+            const cosY = Math.cos(rotationY), sinY = Math.sin(rotationY);
+
+            // Project 3D point to 2D
+            function project(x, y, z) {
+                // Center
+                x -= cx; y -= cy; z -= cz;
+                // Rotate around Y
+                const x1 = x * cosY - z * sinY;
+                const z1 = x * sinY + z * cosY;
+                // Rotate around X
+                const y1 = y * cosX - z1 * sinX;
+                const z2 = y * sinX + z1 * cosX;
+                // Project
+                return [w/2 + x1 * scale, h/2 - y1 * scale, z2];
+            }
+
+            const positions = meshData.positions;
+            const indices = meshData.indices;
+
+            if (wireframeMode.checked) {
+                // Wireframe mode - draw edges
+                ctx3d.strokeStyle = '#667eea';
+                ctx3d.lineWidth = 0.5;
+                ctx3d.beginPath();
+
+                for (let i = 0; i < indices.length; i += 3) {
+                    const i0 = indices[i] * 3;
+                    const i1 = indices[i + 1] * 3;
+                    const i2 = indices[i + 2] * 3;
+
+                    const p0 = project(positions[i0], positions[i0 + 1], positions[i0 + 2]);
+                    const p1 = project(positions[i1], positions[i1 + 1], positions[i1 + 2]);
+                    const p2 = project(positions[i2], positions[i2 + 1], positions[i2 + 2]);
+
+                    ctx3d.moveTo(p0[0], p0[1]);
+                    ctx3d.lineTo(p1[0], p1[1]);
+                    ctx3d.lineTo(p2[0], p2[1]);
+                    ctx3d.lineTo(p0[0], p0[1]);
+                }
+                ctx3d.stroke();
+            } else {
+                // Solid mode with simple lighting
+                const triangles = [];
+                for (let i = 0; i < indices.length; i += 3) {
+                    const i0 = indices[i] * 3;
+                    const i1 = indices[i + 1] * 3;
+                    const i2 = indices[i + 2] * 3;
+
+                    const p0 = project(positions[i0], positions[i0 + 1], positions[i0 + 2]);
+                    const p1 = project(positions[i1], positions[i1 + 1], positions[i1 + 2]);
+                    const p2 = project(positions[i2], positions[i2 + 1], positions[i2 + 2]);
+
+                    // Compute normal for lighting
+                    const ax = p1[0] - p0[0], ay = p1[1] - p0[1];
+                    const bx = p2[0] - p0[0], by = p2[1] - p0[1];
+                    const nz = ax * by - ay * bx;
+
+                    // Back-face culling
+                    if (nz > 0) continue;
+
+                    const avgZ = (p0[2] + p1[2] + p2[2]) / 3;
+                    triangles.push({ p0, p1, p2, avgZ, nz });
+                }
+
+                // Sort by depth
+                triangles.sort((a, b) => a.avgZ - b.avgZ);
+
+                // Draw triangles
+                for (const tri of triangles) {
+                    const brightness = Math.min(255, Math.max(50, 150 - tri.nz * 0.1));
+                    ctx3d.fillStyle = `rgb(${brightness * 0.4}, ${brightness * 0.5}, ${brightness})`;
+                    ctx3d.beginPath();
+                    ctx3d.moveTo(tri.p0[0], tri.p0[1]);
+                    ctx3d.lineTo(tri.p1[0], tri.p1[1]);
+                    ctx3d.lineTo(tri.p2[0], tri.p2[1]);
+                    ctx3d.closePath();
+                    ctx3d.fill();
+                }
+            }
+
+            // Auto-rotate
+            if (autoRotate.checked) {
+                rotationY += 0.01;
+                animationId = requestAnimationFrame(render3d);
+            }
+        }
+
+        // Mouse controls
+        canvas3d.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            if (animationId) cancelAnimationFrame(animationId);
+        });
+
+        canvas3d.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - lastMouseX;
+            const dy = e.clientY - lastMouseY;
+            rotationY += dx * 0.01;
+            rotationX += dy * 0.01;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            render3d();
+        });
+
+        canvas3d.addEventListener('mouseup', () => { isDragging = false; });
+        canvas3d.addEventListener('mouseleave', () => { isDragging = false; });
+
+        canvas3d.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            zoom *= e.deltaY > 0 ? 0.9 : 1.1;
+            zoom = Math.max(0.1, Math.min(10, zoom));
+            render3d();
+        });
+
+        wireframeMode.addEventListener('change', render3d);
+        autoRotate.addEventListener('change', () => {
+            if (autoRotate.checked) render3d();
+        });
+
+        window.addEventListener('resize', () => {
+            if (meshData) {
+                resizeCanvas3d();
+                render3d();
+            }
+        });
+
+        // Hook into file import
+        const originalHandleFileImport = handleFileImport;
+        handleFileImport = async function(file) {
+            await originalHandleFileImport(file);
+            loadMeshForViewer();
+        };
     </script>
 </body>
 </html>

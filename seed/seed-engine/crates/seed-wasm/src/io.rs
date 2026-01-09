@@ -177,6 +177,50 @@ impl FileConverter {
         serde_wasm_bindgen::to_value(&stats)
             .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
     }
+
+    /// Get mesh data for rendering (positions and indices).
+    #[wasm_bindgen(js_name = getMeshData)]
+    pub fn get_mesh_data(&self, data: &[u8]) -> Result<JsValue, JsError> {
+        let options = ReadOptions::default();
+        let scene = self.registry.read(data, &options)
+            .map_err(|e| JsError::new(&format!("Read error: {}", e)))?;
+
+        // Collect all mesh data
+        let mut all_positions: Vec<f32> = Vec::new();
+        let mut all_indices: Vec<u32> = Vec::new();
+        let mut index_offset: u32 = 0;
+
+        for geom in &scene.geometries {
+            if let seed_io::scene::Geometry::Mesh(mesh) = geom {
+                // Add positions (convert Vec3 to flat array)
+                for pos in &mesh.positions {
+                    all_positions.push(pos.x);
+                    all_positions.push(pos.y);
+                    all_positions.push(pos.z);
+                }
+
+                // Add indices with offset
+                for idx in &mesh.indices {
+                    all_indices.push(*idx + index_offset);
+                }
+
+                index_offset += mesh.positions.len() as u32;
+            }
+        }
+
+        // Compute bounding box for camera positioning
+        let (min, max) = compute_bounds(&all_positions);
+
+        let mesh_data = MeshDataJs {
+            positions: all_positions,
+            indices: all_indices,
+            bounds_min: min,
+            bounds_max: max,
+        };
+
+        serde_wasm_bindgen::to_value(&mesh_data)
+            .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
+    }
 }
 
 impl Default for FileConverter {
@@ -192,6 +236,36 @@ struct SceneStats {
     geometry_count: usize,
     material_count: usize,
     root_count: usize,
+}
+
+/// Mesh data for JavaScript rendering.
+#[derive(serde::Serialize)]
+struct MeshDataJs {
+    positions: Vec<f32>,
+    indices: Vec<u32>,
+    bounds_min: [f32; 3],
+    bounds_max: [f32; 3],
+}
+
+/// Compute bounding box from flat position array.
+fn compute_bounds(positions: &[f32]) -> ([f32; 3], [f32; 3]) {
+    if positions.is_empty() {
+        return ([0.0; 3], [0.0; 3]);
+    }
+
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+
+    for chunk in positions.chunks(3) {
+        if chunk.len() == 3 {
+            for i in 0..3 {
+                min[i] = min[i].min(chunk[i]);
+                max[i] = max[i].max(chunk[i]);
+            }
+        }
+    }
+
+    (min, max)
 }
 
 /// Scene node for JavaScript.
