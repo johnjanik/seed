@@ -150,6 +150,16 @@ impl Color {
         )
     }
 
+    /// Convert to hex string (e.g., "#FF5733").
+    pub fn to_hex(&self) -> String {
+        let (r, g, b, a) = self.to_rgba8();
+        if a == 255 {
+            format!("#{:02X}{:02X}{:02X}", r, g, b)
+        } else {
+            format!("#{:02X}{:02X}{:02X}{:02X}", r, g, b, a)
+        }
+    }
+
     // Common colors
     pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);

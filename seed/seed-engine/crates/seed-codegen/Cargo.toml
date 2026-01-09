@@ -1,0 +1,45 @@
+[package]
+name = "seed-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Code generation from Seed designs to native UI frameworks"
+
+[features]
+default = ["swiftui", "compose", "react"]
+swiftui = []
+compose = []
+react = []
+flutter = []
+
+[dependencies]
+seed-core = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Data structures
+indexmap = { workspace = true, features = ["serde"] }
+
+# Template rendering
+handlebars = "5.1"
+
+# Code formatting
+prettyplease = "0.2"
+
+# Syntax tree manipulation (for Rust-based generators)
+syn = { version = "2.0", features = ["full", "parsing", "printing"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+
+# Utilities
+regex = "1.10"
+convert_case = "0.6"
+
+[dev-dependencies]
+insta.workspace = true
+tempfile = "3.0"
