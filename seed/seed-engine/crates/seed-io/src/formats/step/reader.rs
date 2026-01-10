@@ -10,6 +10,16 @@ use super::p21::parse_data_section;
 use glam::{Mat4, Vec3};
 use std::f32::consts::PI;
 
+/// Information about an edge's underlying curve.
+struct EdgeCurveInfo {
+    /// Whether the curve is a circle (vs line or other).
+    is_circle: bool,
+    /// Start point of the edge.
+    start_point: Option<Vec3>,
+    /// End point of the edge.
+    end_point: Option<Vec3>,
+}
+
 /// Reader for STEP files.
 pub struct StepReader;
 
@@ -238,10 +248,8 @@ impl<'a> StepConverter<'a> {
             Some(StepEntity::Plane(plane)) => {
                 self.tessellate_planar_face(face, plane.position, mesh)?;
             }
-            Some(StepEntity::CylindricalSurface(_cyl)) => {
-                // For partial cylindrical faces (like gear teeth), use edge-based tessellation
-                // Full cylinder tessellation doesn't respect boundary curves
-                self.tessellate_face_from_edges(face, mesh)?;
+            Some(StepEntity::CylindricalSurface(cyl)) => {
+                self.tessellate_cylindrical_face(face, cyl.position, cyl.radius as f32, mesh)?;
             }
             Some(StepEntity::SphericalSurface(sphere)) => {
                 self.tessellate_spherical_face(face, sphere.position, sphere.radius as f32, mesh)?;
@@ -335,25 +343,128 @@ impl<'a> StepConverter<'a> {
         mesh: &mut TriangleMesh,
     ) -> Result<()> {
         let transform = self.get_axis_transform(position_id);
-        let segments = 24;
+        let inverse_transform = transform.inverse();
 
-        // Get bounds from edges to determine height
-        let (min_z, max_z) = self.get_face_z_bounds(face);
-        let height = max_z - min_z;
+        // Collect all boundary points and analyze edge types
+        let mut local_points: Vec<Vec3> = Vec::new();
+        let mut has_circular_edges = false;
+        let mut angular_bounds: Option<(f32, f32)> = None;
 
-        if height <= 0.0 {
+        for bound_id in &face.bounds {
+            let bound = self.graph.get(*bound_id);
+            let loop_id = match bound {
+                Some(StepEntity::FaceOuterBound(b)) => b.bound,
+                Some(StepEntity::FaceBound(b)) => b.bound,
+                _ => continue,
+            };
+
+            if let Some(StepEntity::EdgeLoop(loop_entity)) = self.graph.get(loop_id) {
+                for edge_id in &loop_entity.edges {
+                    // Get the curve type for this edge
+                    if let Some(curve_info) = self.get_edge_curve_info(*edge_id) {
+                        if curve_info.is_circle {
+                            has_circular_edges = true;
+                            // Compute angular range from circle endpoints
+                            if let (Some(start), Some(end)) = (curve_info.start_point, curve_info.end_point) {
+                                let local_start = inverse_transform.transform_point3(start);
+                                let local_end = inverse_transform.transform_point3(end);
+
+                                let start_angle = local_start.y.atan2(local_start.x);
+                                let end_angle = local_end.y.atan2(local_end.x);
+
+                                // Update angular bounds
+                                match angular_bounds {
+                                    None => angular_bounds = Some((start_angle.min(end_angle), start_angle.max(end_angle))),
+                                    Some((min_a, max_a)) => {
+                                        angular_bounds = Some((
+                                            min_a.min(start_angle).min(end_angle),
+                                            max_a.max(start_angle).max(end_angle),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Collect edge endpoints for bounds calculation
+                    if let Some(point) = self.get_edge_start_point(*edge_id) {
+                        local_points.push(inverse_transform.transform_point3(point));
+                    }
+                    if let Some(point) = self.get_edge_end_point(*edge_id) {
+                        local_points.push(inverse_transform.transform_point3(point));
+                    }
+                }
+            }
+        }
+
+        if local_points.is_empty() {
             return Ok(());
         }
+
+        // Compute z bounds from local points
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
+        for p in &local_points {
+            min_z = min_z.min(p.z);
+            max_z = max_z.max(p.z);
+        }
+
+        let height = max_z - min_z;
+        if height <= 1e-6 {
+            return Ok(());
+        }
+
+        // Determine angular range
+        let (theta_min, theta_max) = if has_circular_edges {
+            // Use detected angular bounds, but ensure we cover the arc properly
+            match angular_bounds {
+                Some((min_a, max_a)) => {
+                    // Handle wrap-around: if range is small, it might be a full circle
+                    let range = max_a - min_a;
+                    if range < 0.1 {
+                        // Points are close together - likely full circle
+                        (-PI, PI)
+                    } else if range > 2.0 * PI - 0.1 {
+                        // Nearly full circle
+                        (-PI, PI)
+                    } else {
+                        (min_a, max_a)
+                    }
+                }
+                None => (-PI, PI),
+            }
+        } else {
+            // No circular edges - compute from point angles
+            let mut min_angle = f32::MAX;
+            let mut max_angle = f32::MIN;
+            for p in &local_points {
+                let angle = p.y.atan2(p.x);
+                min_angle = min_angle.min(angle);
+                max_angle = max_angle.max(angle);
+            }
+
+            let range = max_angle - min_angle;
+            if range < 0.1 || range > 2.0 * PI - 0.1 {
+                (-PI, PI)
+            } else {
+                (min_angle, max_angle)
+            }
+        };
+
+        // Calculate segments based on angular range
+        let angular_range = theta_max - theta_min;
+        let u_segments = ((angular_range.abs() / (PI / 12.0)).ceil() as u32).max(4).min(48);
+        let v_segments = ((height / (radius * 0.2)).ceil() as u32).max(2).min(24);
 
         let base_idx = mesh.positions.len() as u32;
 
         // Generate cylinder vertices
-        for j in 0..=1 {
-            let z = min_z + (j as f32) * height;
-            for i in 0..=segments {
-                let angle = (i as f32 / segments as f32) * 2.0 * PI;
-                let x = radius * angle.cos();
-                let y = radius * angle.sin();
+        for j in 0..=v_segments {
+            let z = min_z + (j as f32 / v_segments as f32) * height;
+            for i in 0..=u_segments {
+                let theta = theta_min + (i as f32 / u_segments as f32) * angular_range;
+                let x = radius * theta.cos();
+                let y = radius * theta.sin();
                 let local = Vec3::new(x, y, z);
                 let world = transform.transform_point3(local);
                 mesh.positions.push(world);
@@ -361,20 +472,74 @@ impl<'a> StepConverter<'a> {
         }
 
         // Generate indices
-        for i in 0..segments {
-            let i0 = base_idx + i;
-            let i1 = base_idx + i + 1;
-            let i2 = base_idx + i + segments + 2;
-            let i3 = base_idx + i + segments + 1;
+        for j in 0..v_segments {
+            for i in 0..u_segments {
+                let row_size = u_segments + 1;
+                let i0 = base_idx + j * row_size + i;
+                let i1 = base_idx + j * row_size + i + 1;
+                let i2 = base_idx + (j + 1) * row_size + i + 1;
+                let i3 = base_idx + (j + 1) * row_size + i;
 
-            if face.same_sense {
-                mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
-            } else {
-                mesh.indices.extend_from_slice(&[i0, i2, i1, i0, i3, i2]);
+                if face.same_sense {
+                    mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
+                } else {
+                    mesh.indices.extend_from_slice(&[i0, i2, i1, i0, i3, i2]);
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Get information about an edge's underlying curve.
+    fn get_edge_curve_info(&self, edge_id: u64) -> Option<EdgeCurveInfo> {
+        let edge = self.graph.get(edge_id)?;
+
+        let (edge_curve_id, orientation) = match edge {
+            StepEntity::OrientedEdge(oe) => (oe.edge, oe.orientation),
+            _ => return None,
+        };
+
+        let edge_curve = match self.graph.get(edge_curve_id)? {
+            StepEntity::EdgeCurve(ec) => ec,
+            _ => return None,
+        };
+
+        let curve = self.graph.get(edge_curve.curve)?;
+        let is_circle = matches!(curve, StepEntity::Circle(_));
+
+        let start_point = self.graph.get_vertex_coords(edge_curve.start_vertex);
+        let end_point = self.graph.get_vertex_coords(edge_curve.end_vertex);
+
+        Some(EdgeCurveInfo {
+            is_circle,
+            start_point: if orientation { start_point } else { end_point },
+            end_point: if orientation { end_point } else { start_point },
+        })
+    }
+
+    /// Get the end point of an edge.
+    fn get_edge_end_point(&self, edge_id: u64) -> Option<Vec3> {
+        let edge = self.graph.get(edge_id)?;
+
+        match edge {
+            StepEntity::OrientedEdge(oe) => {
+                let edge_curve = self.graph.get(oe.edge)?;
+                match edge_curve {
+                    StepEntity::EdgeCurve(ec) => {
+                        let vertex_id = if oe.orientation {
+                            ec.end_vertex
+                        } else {
+                            ec.start_vertex
+                        };
+                        self.graph.get_vertex_coords(vertex_id)
+                    }
+                    _ => None,
+                }
+            }
+            StepEntity::EdgeCurve(ec) => self.graph.get_vertex_coords(ec.end_vertex),
+            _ => None,
+        }
     }
 
     fn tessellate_spherical_face(
