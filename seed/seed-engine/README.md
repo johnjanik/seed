@@ -53,16 +53,16 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-seed-io = { git = "https://github.com/johnjanik/seed", branch = "master" }
+seed-io = { git = "https://github.com/johnjanik/seed", branch = "main" }
 ```
 
 Or for the full engine:
 
 ```toml
 [dependencies]
-seed-core = { git = "https://github.com/johnjanik/seed", branch = "master" }
-seed-parser = { git = "https://github.com/johnjanik/seed", branch = "master" }
-seed-io = { git = "https://github.com/johnjanik/seed", branch = "master" }
+seed-core = { git = "https://github.com/johnjanik/seed", branch = "main" }
+seed-parser = { git = "https://github.com/johnjanik/seed", branch = "main" }
+seed-io = { git = "https://github.com/johnjanik/seed", branch = "main" }
 ```
 
 ## Usage
