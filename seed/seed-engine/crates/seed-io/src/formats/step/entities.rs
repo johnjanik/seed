@@ -597,6 +597,35 @@ pub fn convert_entity(instance: &EntityInstance) -> StepEntity {
                 minor_radius: params.get(3).map(extract_real).unwrap_or(0.5),
             })
         }
+        "B_SPLINE_SURFACE_WITH_KNOTS" => {
+            // Parse 2D control point grid
+            let control_points = params
+                .get(3)
+                .map(|v| match v {
+                    StepValue::List(rows) => rows
+                        .iter()
+                        .map(|row| extract_ref_list(row))
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_default();
+
+            StepEntity::BSplineSurface(BSplineSurface {
+                id,
+                name: params.first().map(extract_string).unwrap_or_default(),
+                u_degree: params.get(1).map(|v| extract_int(v) as u32).unwrap_or(3),
+                v_degree: params.get(2).map(|v| extract_int(v) as u32).unwrap_or(3),
+                control_points,
+                surface_form: params.get(4).map(extract_string).unwrap_or_default(),
+                u_closed: params.get(5).map(extract_bool).unwrap_or(false),
+                v_closed: params.get(6).map(extract_bool).unwrap_or(false),
+                self_intersect: params.get(7).map(extract_bool).unwrap_or(false),
+                u_multiplicities: params.get(8).map(extract_int_list).unwrap_or_default(),
+                v_multiplicities: params.get(9).map(extract_int_list).unwrap_or_default(),
+                u_knots: params.get(10).map(extract_real_list).unwrap_or_default(),
+                v_knots: params.get(11).map(extract_real_list).unwrap_or_default(),
+            })
+        }
 
         // Topology
         "VERTEX_POINT" => {

@@ -4,7 +4,7 @@ use crate::error::{IoError, Result};
 use crate::registry::{FormatReader, ReadOptions};
 use crate::scene::{Geometry, Material, SceneNode, TriangleMesh, UnifiedScene};
 
-use super::entities::{AdvancedFace, EntityGraph, StepEntity};
+use super::entities::{AdvancedFace, BSplineSurface, EntityGraph, StepEntity};
 use super::p21::parse_data_section;
 
 use glam::{Mat4, Vec3};
@@ -260,6 +260,99 @@ fn merge_polygon_with_holes(
     (result_2d, result_3d)
 }
 
+/// Expand knots with multiplicities into full knot vector.
+fn expand_knots(knots: &[f64], multiplicities: &[u32]) -> Vec<f64> {
+    let mut result = Vec::new();
+    for (knot, &mult) in knots.iter().zip(multiplicities.iter()) {
+        for _ in 0..mult {
+            result.push(*knot);
+        }
+    }
+    result
+}
+
+/// Evaluate B-spline surface at parameter (u, v) using de Boor's algorithm.
+fn evaluate_bspline_surface(
+    control_points: &[Vec<Vec3>],
+    u_knots: &[f64],
+    v_knots: &[f64],
+    u_degree: usize,
+    v_degree: usize,
+    u: f64,
+    v: f64,
+) -> Vec3 {
+    let n_v = control_points.len();
+
+    // First, evaluate B-spline curves in V direction for each U column
+    let mut u_points = Vec::with_capacity(control_points[0].len());
+
+    for i in 0..control_points[0].len() {
+        // Collect control points for this V curve
+        let v_controls: Vec<Vec3> = (0..n_v).map(|j| control_points[j][i]).collect();
+        let point = de_boor(&v_controls, v_knots, v_degree, v);
+        u_points.push(point);
+    }
+
+    // Then evaluate the resulting curve in U direction
+    de_boor(&u_points, u_knots, u_degree, u)
+}
+
+/// De Boor's algorithm for B-spline curve evaluation.
+/// Returns the point on the curve at parameter t.
+fn de_boor(control_points: &[Vec3], knots: &[f64], degree: usize, t: f64) -> Vec3 {
+    let n = control_points.len();
+    if n == 0 {
+        return Vec3::ZERO;
+    }
+    if n == 1 {
+        return control_points[0];
+    }
+
+    // Find the knot span index k such that knots[k] <= t < knots[k+1]
+    let mut k = degree;
+    for i in degree..knots.len() - degree - 1 {
+        if t >= knots[i] && t < knots[i + 1] {
+            k = i;
+            break;
+        }
+    }
+
+    // Handle edge case at end of parameter range
+    if t >= knots[knots.len() - degree - 1] {
+        k = knots.len() - degree - 2;
+    }
+
+    // Copy the affected control points
+    let mut d: Vec<Vec3> = Vec::with_capacity(degree + 1);
+    for j in 0..=degree {
+        let idx = k.saturating_sub(degree) + j;
+        if idx < n {
+            d.push(control_points[idx]);
+        } else {
+            d.push(control_points[n - 1]);
+        }
+    }
+
+    // De Boor recursion
+    for r in 1..=degree {
+        for j in (r..=degree).rev() {
+            let i = k.saturating_sub(degree) + j;
+            let denom = knots.get(i + degree + 1 - r).unwrap_or(&1.0)
+                - knots.get(i).unwrap_or(&0.0);
+
+            let alpha = if denom.abs() > 1e-10 {
+                ((t - knots.get(i).unwrap_or(&0.0)) / denom) as f32
+            } else {
+                0.0
+            };
+
+            d[j] = d[j - 1] * (1.0 - alpha) + d[j] * alpha;
+        }
+    }
+
+    d[degree]
+}
+
 /// Reader for STEP files.
 pub struct StepReader;
 
@@ -511,6 +604,9 @@ impl<'a> StepConverter<'a> {
                     torus.minor_radius as f32,
                     mesh,
                 )?;
+            }
+            Some(StepEntity::BSplineSurface(bspline)) => {
+                self.tessellate_bspline_face(face, bspline, mesh)?;
             }
             _ => {
                 // For unknown surfaces, try to tessellate from edge loops
@@ -1330,6 +1426,97 @@ impl<'a> StepConverter<'a> {
         for j in 0..v_segments {
             for i in 0..u_segments {
                 let row_size = u_segments + 1;
+                let i0 = base_idx + j * row_size + i;
+                let i1 = base_idx + j * row_size + i + 1;
+                let i2 = base_idx + (j + 1) * row_size + i + 1;
+                let i3 = base_idx + (j + 1) * row_size + i;
+
+                if face.same_sense {
+                    mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
+                } else {
+                    mesh.indices.extend_from_slice(&[i0, i2, i1, i0, i3, i2]);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Tessellate a B-spline surface face using de Boor's algorithm.
+    fn tessellate_bspline_face(
+        &self,
+        face: &AdvancedFace,
+        bspline: &BSplineSurface,
+        mesh: &mut TriangleMesh,
+    ) -> Result<()> {
+        // Get control points as Vec3
+        let mut control_points: Vec<Vec<Vec3>> = Vec::new();
+        for row in &bspline.control_points {
+            let mut row_points = Vec::new();
+            for &point_id in row {
+                if let Some(point) = self.graph.get_point(point_id) {
+                    row_points.push(point);
+                } else {
+                    // Missing control point - abort
+                    return self.tessellate_face_from_edges(face, mesh);
+                }
+            }
+            control_points.push(row_points);
+        }
+
+        if control_points.is_empty() || control_points[0].is_empty() {
+            return self.tessellate_face_from_edges(face, mesh);
+        }
+
+        // Build full knot vectors from multiplicities
+        let u_knots = expand_knots(&bspline.u_knots, &bspline.u_multiplicities);
+        let v_knots = expand_knots(&bspline.v_knots, &bspline.v_multiplicities);
+
+        if u_knots.len() < 2 || v_knots.len() < 2 {
+            return self.tessellate_face_from_edges(face, mesh);
+        }
+
+        let u_degree = bspline.u_degree as usize;
+        let v_degree = bspline.v_degree as usize;
+
+        // Determine parameter range
+        let u_min = u_knots[u_degree] as f32;
+        let u_max = u_knots[u_knots.len() - u_degree - 1] as f32;
+        let v_min = v_knots[v_degree] as f32;
+        let v_max = v_knots[v_knots.len() - v_degree - 1] as f32;
+
+        // Adaptive tessellation based on control point grid size
+        let n_u = control_points[0].len();
+        let n_v = control_points.len();
+        let u_segments = (n_u * 2).clamp(8, 64) as u32;
+        let v_segments = (n_v * 2).clamp(8, 64) as u32;
+
+        let base_idx = mesh.positions.len() as u32;
+
+        // Sample the surface
+        for j in 0..=v_segments {
+            let v = v_min + (j as f32 / v_segments as f32) * (v_max - v_min);
+            for i in 0..=u_segments {
+                let u = u_min + (i as f32 / u_segments as f32) * (u_max - u_min);
+
+                // Evaluate B-spline surface at (u, v) using de Boor
+                let point = evaluate_bspline_surface(
+                    &control_points,
+                    &u_knots,
+                    &v_knots,
+                    u_degree,
+                    v_degree,
+                    u as f64,
+                    v as f64,
+                );
+                mesh.positions.push(point);
+            }
+        }
+
+        // Generate triangle indices
+        let row_size = u_segments + 1;
+        for j in 0..v_segments {
+            for i in 0..u_segments {
                 let i0 = base_idx + j * row_size + i;
                 let i1 = base_idx + j * row_size + i + 1;
                 let i2 = base_idx + (j + 1) * row_size + i + 1;
