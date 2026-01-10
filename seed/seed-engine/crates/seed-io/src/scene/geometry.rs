@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub enum Geometry {
     /// Triangle mesh (universal interchange format).
     Mesh(TriangleMesh),
+    /// Line mesh for edges/wireframes.
+    Lines(LineMesh),
     /// Boundary representation (CAD).
     Brep(BrepGeometry),
     /// Parametric primitive.
@@ -21,6 +23,7 @@ impl Geometry {
     pub fn bounds(&self) -> BoundingBox {
         match self {
             Geometry::Mesh(mesh) => mesh.compute_bounds(),
+            Geometry::Lines(lines) => lines.compute_bounds(),
             Geometry::Brep(brep) => brep.bounds.clone(),
             Geometry::Primitive(prim) => prim.compute_bounds(),
             Geometry::Nurbs(nurbs) => nurbs.bounds.clone(),
@@ -110,6 +113,76 @@ impl TriangleMesh {
         }
 
         self.normals = Some(normals);
+    }
+}
+
+/// A line mesh for edges and wireframes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LineMesh {
+    /// Vertex positions (3 floats per vertex).
+    pub positions: Vec<Vec3>,
+    /// Vertex colors (4 floats per vertex, optional).
+    pub colors: Option<Vec<Vec4>>,
+    /// Line segment indices (2 indices per line segment).
+    pub indices: Vec<u32>,
+    /// Line width in pixels (for rendering hints).
+    pub line_width: f32,
+}
+
+impl LineMesh {
+    /// Create a new empty line mesh.
+    pub fn new() -> Self {
+        Self {
+            line_width: 1.0,
+            ..Default::default()
+        }
+    }
+
+    /// Create a line mesh with a specific line width.
+    pub fn with_width(line_width: f32) -> Self {
+        Self {
+            line_width,
+            ..Default::default()
+        }
+    }
+
+    /// Get the number of vertices.
+    pub fn vertex_count(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// Get the number of line segments.
+    pub fn line_count(&self) -> usize {
+        self.indices.len() / 2
+    }
+
+    /// Add a line segment from two points.
+    pub fn add_line(&mut self, start: Vec3, end: Vec3) {
+        let start_idx = self.positions.len() as u32;
+        self.positions.push(start);
+        self.positions.push(end);
+        self.indices.push(start_idx);
+        self.indices.push(start_idx + 1);
+    }
+
+    /// Add a polyline (connected line segments).
+    pub fn add_polyline(&mut self, points: &[Vec3]) {
+        if points.len() < 2 {
+            return;
+        }
+        let start_idx = self.positions.len() as u32;
+        for point in points {
+            self.positions.push(*point);
+        }
+        for i in 0..(points.len() - 1) {
+            self.indices.push(start_idx + i as u32);
+            self.indices.push(start_idx + i as u32 + 1);
+        }
+    }
+
+    /// Compute the bounding box.
+    pub fn compute_bounds(&self) -> BoundingBox {
+        BoundingBox::from_points(&self.positions)
     }
 }
 

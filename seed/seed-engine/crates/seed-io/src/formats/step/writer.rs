@@ -237,6 +237,9 @@ impl<'a> StepBuilder<'a> {
                 Geometry::Nurbs(_) => {
                     // TODO: Write NURBS directly as B_SPLINE_SURFACE
                 }
+                Geometry::Lines(_) => {
+                    // Skip line geometry in STEP export (edge highlighting only)
+                }
             }
         }
 

@@ -2,13 +2,70 @@
 
 use crate::error::{IoError, Result};
 use crate::registry::{FormatReader, ReadOptions};
-use crate::scene::{Geometry, Material, SceneNode, TriangleMesh, UnifiedScene};
+use crate::scene::{Geometry, LineMesh, Material, SceneNode, TriangleMesh, UnifiedScene};
 
 use super::entities::{AdvancedFace, BSplineSurface, EntityGraph, StepEntity};
 use super::p21::parse_data_section;
 
 use glam::{Mat4, Vec3};
 use std::f32::consts::PI;
+
+/// Default chord tolerance (linear deflection) for tessellation in model units.
+/// This controls how closely the tessellated mesh approximates curved surfaces.
+/// A smaller value produces more triangles but smoother curves.
+const DEFAULT_CHORD_TOLERANCE: f32 = 0.02;
+
+/// Calculate the number of segments needed to tessellate an arc with a given
+/// chord tolerance (linear deflection).
+///
+/// The chord tolerance is the maximum distance from the tessellated line to the
+/// actual curve. For a circular arc, this determines how many segments are needed.
+///
+/// # Arguments
+/// * `radius` - The radius of the arc
+/// * `angular_span` - The angular extent of the arc in radians
+/// * `chord_tolerance` - Maximum allowed chord height (linear deflection)
+///
+/// # Returns
+/// The number of segments needed, clamped to reasonable bounds.
+fn compute_arc_segments(radius: f32, angular_span: f32, chord_tolerance: f32) -> u32 {
+    if radius <= 0.0 || angular_span <= 0.0 {
+        return 4;
+    }
+
+    // For a circular arc, the chord height h = r * (1 - cos(theta/2))
+    // where theta is the angle per segment.
+    // Solving for theta: theta = 2 * acos(1 - h/r)
+    // Number of segments = angular_span / theta
+
+    let ratio = (chord_tolerance / radius).min(1.0);
+    let angle_per_segment = 2.0 * (1.0 - ratio).acos();
+
+    if angle_per_segment <= 0.0 {
+        return 64; // Fallback to high detail
+    }
+
+    let segments = (angular_span / angle_per_segment).ceil() as u32;
+
+    // Clamp to reasonable bounds
+    segments.max(4).min(128)
+}
+
+/// Calculate adaptive height segments based on surface curvature and height.
+fn compute_height_segments(height: f32, radius: f32, chord_tolerance: f32) -> u32 {
+    // For cylindrical surfaces, the height segmentation depends on how the
+    // surface is being viewed and any curvature along the height.
+    // Use a simple heuristic: segment based on height relative to radius.
+
+    if height <= 0.0 || radius <= 0.0 {
+        return 2;
+    }
+
+    // Approximate: one segment per chord_tolerance of height, scaled by radius
+    let segments = (height / (chord_tolerance * 2.0)).ceil() as u32;
+
+    segments.max(2).min(64)
+}
 
 /// Information about an edge's underlying curve.
 struct EdgeCurveInfo {
@@ -526,6 +583,8 @@ struct StepConverter<'a> {
     scene: UnifiedScene,
     /// Mapping from shape representation ID to its transform.
     rep_transforms: std::collections::HashMap<u64, Mat4>,
+    /// Mapping from entity IDs to their styled colors (RGB).
+    style_colors: std::collections::HashMap<u64, [f32; 3]>,
 }
 
 impl<'a> StepConverter<'a> {
@@ -535,6 +594,7 @@ impl<'a> StepConverter<'a> {
             options,
             scene: UnifiedScene::new(),
             rep_transforms: std::collections::HashMap::new(),
+            style_colors: std::collections::HashMap::new(),
         }
     }
 
@@ -542,7 +602,10 @@ impl<'a> StepConverter<'a> {
         // Phase 1: Build assembly transform map
         self.build_assembly_transforms();
 
-        // Phase 2: Process geometry via shape representations
+        // Phase 2: Build style color map from STYLED_ITEM entities
+        self.build_style_colors();
+
+        // Phase 3: Process geometry via shape representations
         // Prioritize representation-based processing to apply assembly transforms
         let reps = self.graph.find_shape_representations();
 
@@ -564,7 +627,7 @@ impl<'a> StepConverter<'a> {
                 // Try to find shells directly
                 let shells = self.graph.find_shells();
                 for shell_id in &shells {
-                    self.process_shell(*shell_id, "Shell", Mat4::IDENTITY)?;
+                    self.process_shell(*shell_id, "Shell", Mat4::IDENTITY, None)?;
                 }
             }
         }
@@ -593,6 +656,23 @@ impl<'a> StepConverter<'a> {
         }
     }
 
+    /// Build the mapping from styled items to their colors.
+    fn build_style_colors(&mut self) {
+        let styled_items = self.graph.find_styled_items();
+
+        for styled_item in styled_items {
+            if let Some(color) = self.graph.resolve_styled_item_color(styled_item) {
+                // Map the styled item's target entity to its color
+                self.style_colors.insert(styled_item.item, color);
+            }
+        }
+    }
+
+    /// Get the color for an entity, if styled.
+    fn get_entity_color(&self, entity_id: u64) -> Option<[f32; 3]> {
+        self.style_colors.get(&entity_id).copied()
+    }
+
     /// Get the transform for a representation, if any.
     fn get_representation_transform(&self, rep_id: u64) -> Mat4 {
         self.rep_transforms.get(&rep_id).copied().unwrap_or(Mat4::IDENTITY)
@@ -619,10 +699,10 @@ impl<'a> StepConverter<'a> {
             name
         };
 
-        self.process_shell(shell_id, &name, transform)
+        self.process_shell(shell_id, &name, transform, Some(solid_id))
     }
 
-    fn process_shell(&mut self, shell_id: u64, name: &str, transform: Mat4) -> Result<()> {
+    fn process_shell(&mut self, shell_id: u64, name: &str, transform: Mat4, solid_id: Option<u64>) -> Result<()> {
         let entity = self.graph.get(shell_id).ok_or_else(|| {
             IoError::InvalidData(format!("Shell {} not found", shell_id))
         })?;
@@ -635,15 +715,20 @@ impl<'a> StepConverter<'a> {
 
         // Collect all vertices from tessellated faces
         let mut mesh = TriangleMesh::new();
+        let mut edges = LineMesh::with_width(1.5);
 
         for face_id in faces {
             self.tessellate_face(*face_id, &mut mesh)?;
+            self.extract_face_edges(*face_id, &mut edges)?;
         }
 
         if !mesh.positions.is_empty() {
             // Apply transform to all vertices if non-identity
             if transform != Mat4::IDENTITY {
                 for pos in &mut mesh.positions {
+                    *pos = transform.transform_point3(*pos);
+                }
+                for pos in &mut edges.positions {
                     *pos = transform.transform_point3(*pos);
                 }
             }
@@ -654,11 +739,209 @@ impl<'a> StepConverter<'a> {
             }
 
             let geom_idx = self.scene.add_geometry(Geometry::Mesh(mesh));
-            let node = SceneNode::with_geometry(name, geom_idx);
+            let mut node = SceneNode::with_geometry(name, geom_idx);
+
+            // Check for styled color on solid or shell
+            let color = solid_id
+                .and_then(|id| self.get_entity_color(id))
+                .or_else(|| self.get_entity_color(shell_id));
+            if let Some(color) = color {
+                let material = Material::colored(
+                    format!("{}_material", name),
+                    glam::Vec4::new(color[0], color[1], color[2], 1.0),
+                );
+                let mat_idx = self.scene.add_material(material);
+                node = node.with_material(mat_idx);
+            }
+
             self.scene.add_root(node);
+
+            // Add edges as a separate geometry node
+            if !edges.positions.is_empty() {
+                let edge_geom_idx = self.scene.add_geometry(Geometry::Lines(edges));
+                let edge_node = SceneNode::with_geometry(&format!("{}_edges", name), edge_geom_idx);
+                self.scene.add_root(edge_node);
+            }
         }
 
         Ok(())
+    }
+
+    /// Extract boundary edges from a face as line segments.
+    fn extract_face_edges(&self, face_id: u64, edges: &mut LineMesh) -> Result<()> {
+        let entity = self.graph.get(face_id).ok_or_else(|| {
+            IoError::InvalidData(format!("Face {} not found", face_id))
+        })?;
+
+        let face = match entity {
+            StepEntity::AdvancedFace(f) => f,
+            _ => return Ok(()),
+        };
+
+        // Extract edges from each bound (outer and inner loops)
+        for bound_id in &face.bounds {
+            if let Some(bound) = self.graph.get(*bound_id) {
+                let loop_id = match bound {
+                    StepEntity::FaceBound(fb) => fb.bound,
+                    StepEntity::FaceOuterBound(fob) => fob.bound,
+                    _ => continue,
+                };
+
+                if let Some(StepEntity::EdgeLoop(edge_loop)) = self.graph.get(loop_id) {
+                    for oriented_edge_id in &edge_loop.edges {
+                        self.extract_edge_curve(*oriented_edge_id, edges);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Extract a single edge curve as line segments.
+    fn extract_edge_curve(&self, oriented_edge_id: u64, edges: &mut LineMesh) {
+        let oriented_edge = match self.graph.get(oriented_edge_id) {
+            Some(StepEntity::OrientedEdge(oe)) => oe,
+            _ => return,
+        };
+
+        let edge_curve = match self.graph.get(oriented_edge.edge) {
+            Some(StepEntity::EdgeCurve(ec)) => ec,
+            _ => return,
+        };
+
+        // Get curve geometry
+        match self.graph.get(edge_curve.curve) {
+            Some(StepEntity::Line(_)) => {
+                // Extract line endpoints
+                let start = self.graph.get_vertex_coords(edge_curve.start_vertex);
+                let end = self.graph.get_vertex_coords(edge_curve.end_vertex);
+                if let (Some(s), Some(e)) = (start, end) {
+                    edges.add_line(s, e);
+                }
+            }
+            Some(StepEntity::Circle(circle)) => {
+                // Sample the circle arc
+                if let Some(placement) = self.graph.get(circle.position) {
+                    if let StepEntity::Axis2Placement3D(axis) = placement {
+                        if let Some(center) = self.graph.get_point(axis.location) {
+                            let z_axis = axis.axis
+                                .and_then(|id| self.graph.get_direction(id))
+                                .unwrap_or(Vec3::Z);
+                            let x_axis = axis.ref_direction
+                                .and_then(|id| self.graph.get_direction(id))
+                                .unwrap_or_else(|| {
+                                    let arbitrary = if z_axis.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+                                    (arbitrary - z_axis * z_axis.dot(arbitrary)).normalize()
+                                });
+                            let y_axis = z_axis.cross(x_axis).normalize();
+
+                            // Sample the circle
+                            let radius = circle.radius as f32;
+                            let segments = 32;
+                            let mut points = Vec::with_capacity(segments + 1);
+                            for i in 0..=segments {
+                                let theta = 2.0 * PI * (i as f32 / segments as f32);
+                                let point = center
+                                    + x_axis * (radius * theta.cos())
+                                    + y_axis * (radius * theta.sin());
+                                points.push(point);
+                            }
+                            edges.add_polyline(&points);
+                        }
+                    }
+                }
+            }
+            Some(StepEntity::Ellipse(ellipse)) => {
+                // Sample the ellipse arc
+                if let Some(placement) = self.graph.get(ellipse.position) {
+                    if let StepEntity::Axis2Placement3D(axis) = placement {
+                        if let Some(center) = self.graph.get_point(axis.location) {
+                            let z_axis = axis.axis
+                                .and_then(|id| self.graph.get_direction(id))
+                                .unwrap_or(Vec3::Z);
+                            let x_axis = axis.ref_direction
+                                .and_then(|id| self.graph.get_direction(id))
+                                .unwrap_or_else(|| {
+                                    let arbitrary = if z_axis.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+                                    (arbitrary - z_axis * z_axis.dot(arbitrary)).normalize()
+                                });
+                            let y_axis = z_axis.cross(x_axis).normalize();
+
+                            let a = ellipse.semi_axis_1 as f32;
+                            let b = ellipse.semi_axis_2 as f32;
+                            let segments = 32;
+                            let mut points = Vec::with_capacity(segments + 1);
+                            for i in 0..=segments {
+                                let theta = 2.0 * PI * (i as f32 / segments as f32);
+                                let point = center
+                                    + x_axis * (a * theta.cos())
+                                    + y_axis * (b * theta.sin());
+                                points.push(point);
+                            }
+                            edges.add_polyline(&points);
+                        }
+                    }
+                }
+            }
+            Some(StepEntity::BSplineCurve(bspline)) => {
+                // Sample the B-spline curve
+                self.extract_bspline_curve_edge(bspline, edges);
+            }
+            _ => {
+                // Fallback: just connect start and end vertices
+                let start = self.graph.get_vertex_coords(edge_curve.start_vertex);
+                let end = self.graph.get_vertex_coords(edge_curve.end_vertex);
+                if let (Some(s), Some(e)) = (start, end) {
+                    edges.add_line(s, e);
+                }
+            }
+        }
+    }
+
+    /// Extract a B-spline curve as line segments.
+    fn extract_bspline_curve_edge(&self, bspline: &super::entities::BSplineCurve, edges: &mut LineMesh) {
+        // Get control points
+        let control_points: Vec<Vec3> = bspline.control_points
+            .iter()
+            .filter_map(|id| self.graph.get_point(*id))
+            .collect();
+
+        if control_points.len() < 2 {
+            return;
+        }
+
+        // Build knot vector with multiplicities
+        let mut knots = Vec::new();
+        for (i, &mult) in bspline.knot_multiplicities.iter().enumerate() {
+            if let Some(&knot) = bspline.knots.get(i) {
+                for _ in 0..mult {
+                    knots.push(knot);
+                }
+            }
+        }
+
+        if knots.is_empty() {
+            // Fallback: uniform knots
+            let n = control_points.len();
+            let degree = bspline.degree as usize;
+            knots = (0..=(n + degree)).map(|i| i as f64).collect();
+        }
+
+        let degree = bspline.degree as usize;
+        let t_min = knots.get(degree).copied().unwrap_or(0.0);
+        let t_max = knots.get(knots.len().saturating_sub(degree + 1)).copied().unwrap_or(1.0);
+
+        // Sample the curve
+        let segments = 32;
+        let mut points = Vec::with_capacity(segments + 1);
+        for i in 0..=segments {
+            let t = t_min + (t_max - t_min) * (i as f64 / segments as f64);
+            let point = de_boor(&control_points, &knots, degree, t);
+            points.push(point);
+        }
+
+        edges.add_polyline(&points);
     }
 
     fn process_shape_representation(&mut self, rep_id: u64) -> Result<()> {
@@ -691,12 +974,12 @@ impl<'a> StepConverter<'a> {
                     } else {
                         name.clone()
                     };
-                    self.process_shell(*item_id, &item_name, transform)?;
+                    self.process_shell(*item_id, &item_name, transform, None)?;
                 }
                 Some(StepEntity::ShellBasedSurfaceModel(model)) => {
                     let shells: Vec<u64> = model.shells.clone();
                     for shell_id in shells {
-                        self.process_shell(shell_id, &name, transform)?;
+                        self.process_shell(shell_id, &name, transform, None)?;
                     }
                 }
                 _ => {}
@@ -951,8 +1234,9 @@ impl<'a> StepConverter<'a> {
                 return Ok(());
             }
 
-            let u_segments = ((angular_range.abs() / (PI / 12.0)).ceil() as u32).max(4).min(48);
-            let v_segments = ((height / (radius * 0.2)).ceil() as u32).max(2).min(24);
+            // Adaptive tessellation based on chord tolerance
+            let u_segments = compute_arc_segments(radius, angular_range.abs(), DEFAULT_CHORD_TOLERANCE);
+            let v_segments = compute_height_segments(height, radius, DEFAULT_CHORD_TOLERANCE);
 
             let base_idx = mesh.positions.len() as u32;
 
@@ -1007,9 +1291,9 @@ impl<'a> StepConverter<'a> {
                 return Ok(());
             }
 
-            // Use finer grid for proper curvature
-            let u_segments = ((angular_range.abs() / (PI / 16.0)).ceil() as u32).max(4).min(48);
-            let v_segments = ((height / (radius * 0.15)).ceil() as u32).max(2).min(32);
+            // Adaptive tessellation based on chord tolerance
+            let u_segments = compute_arc_segments(radius, angular_range.abs(), DEFAULT_CHORD_TOLERANCE);
+            let v_segments = compute_height_segments(height, radius, DEFAULT_CHORD_TOLERANCE);
 
             let base_idx = mesh.positions.len() as u32;
 
@@ -1403,11 +1687,11 @@ impl<'a> StepConverter<'a> {
             (phi_min, phi_max)
         };
 
-        // Adaptive segments
-        let u_segments = ((theta_max - theta_min).abs() / (PI / 8.0)).ceil() as u32;
-        let u_segments = u_segments.max(4).min(32);
-        let v_segments = ((phi_max - phi_min).abs() / (PI / 8.0)).ceil() as u32;
-        let v_segments = v_segments.max(2).min(16);
+        // Adaptive tessellation based on chord tolerance
+        let theta_span = (theta_max - theta_min).abs();
+        let phi_span = (phi_max - phi_min).abs();
+        let u_segments = compute_arc_segments(radius, theta_span, DEFAULT_CHORD_TOLERANCE);
+        let v_segments = compute_arc_segments(radius, phi_span, DEFAULT_CHORD_TOLERANCE);
 
         let base_idx = mesh.positions.len() as u32;
 
@@ -1510,10 +1794,11 @@ impl<'a> StepConverter<'a> {
             (theta_min, theta_max)
         };
 
-        // Adaptive segments
+        // Adaptive tessellation based on chord tolerance
         let angular_range = theta_max - theta_min;
-        let u_segments = ((angular_range.abs() / (PI / 12.0)).ceil() as u32).max(4).min(48);
-        let v_segments = ((height / (base_radius.abs().max(0.1) * 0.2)).ceil() as u32).max(2).min(24);
+        let avg_radius = (base_radius + (base_radius + height * semi_angle.tan())).abs() / 2.0;
+        let u_segments = compute_arc_segments(avg_radius.max(0.1), angular_range.abs(), DEFAULT_CHORD_TOLERANCE);
+        let v_segments = compute_height_segments(height, avg_radius.max(0.1), DEFAULT_CHORD_TOLERANCE);
 
         let base_idx = mesh.positions.len() as u32;
 
@@ -1627,9 +1912,12 @@ impl<'a> StepConverter<'a> {
             (v_min, v_max)
         };
 
-        // Adaptive segments
-        let u_segments = (((u_max - u_min).abs() / (PI / 12.0)).ceil() as u32).max(4).min(48);
-        let v_segments = (((v_max - v_min).abs() / (PI / 6.0)).ceil() as u32).max(4).min(24);
+        // Adaptive tessellation based on chord tolerance
+        // For torus: u is the major angle, v is the minor (tube) angle
+        let u_span = (u_max - u_min).abs();
+        let v_span = (v_max - v_min).abs();
+        let u_segments = compute_arc_segments(major_radius, u_span, DEFAULT_CHORD_TOLERANCE);
+        let v_segments = compute_arc_segments(minor_radius, v_span, DEFAULT_CHORD_TOLERANCE);
 
         let base_idx = mesh.positions.len() as u32;
 

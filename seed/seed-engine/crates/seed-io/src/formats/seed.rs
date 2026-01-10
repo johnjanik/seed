@@ -540,6 +540,30 @@ fn convert_scene_geometry_to_seed(
                 bounds: None,
             }))
         }
+        Geometry::Lines(lines) => {
+            // Line geometry - compute bounds and import
+            let bounds = lines.compute_bounds();
+            let path = source_path
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "edges.glb".to_string());
+
+            Ok(SeedGeometry::Import(seed_core::ast::GeometryImport {
+                path,
+                format: source_format.map(|s| s.to_string()),
+                bounds: Some(seed_core::ast::BoundingBox {
+                    min: [
+                        (bounds.min.x * 1000.0) as f64,
+                        (bounds.min.y * 1000.0) as f64,
+                        (bounds.min.z * 1000.0) as f64,
+                    ],
+                    max: [
+                        (bounds.max.x * 1000.0) as f64,
+                        (bounds.max.y * 1000.0) as f64,
+                        (bounds.max.z * 1000.0) as f64,
+                    ],
+                }),
+            }))
+        }
     }
 }
 

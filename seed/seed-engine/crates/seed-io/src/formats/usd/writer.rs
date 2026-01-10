@@ -332,6 +332,10 @@ impl UsdaBuilder {
                 self.write_line("# NURBS geometry (not yet supported in USD export)");
                 Ok(())
             }
+            Geometry::Lines(_) => {
+                self.write_line("# Line geometry (edge highlighting - not exported to USD)");
+                Ok(())
+            }
         }
     }
 

@@ -329,6 +329,43 @@ impl GltfBuilder {
         mesh_idx
     }
 
+    /// Convert a LineMesh to a glTF Mesh with LINES mode.
+    fn add_line_mesh(&mut self, lines: &crate::scene::LineMesh, material_idx: Option<usize>) -> usize {
+        let mut attributes = HashMap::new();
+
+        // Positions (required)
+        let position_accessor = self.add_accessor_vec3(&lines.positions, TARGET_ARRAY_BUFFER);
+        attributes.insert("POSITION".to_string(), position_accessor);
+
+        // Vertex colors (optional)
+        if let Some(ref colors) = lines.colors {
+            let color_accessor = self.add_accessor_vec4(colors);
+            attributes.insert("COLOR_0".to_string(), color_accessor);
+        }
+
+        // Indices
+        let indices_accessor = self.add_accessor_indices(&lines.indices);
+
+        // Create primitive with LINES mode
+        let primitive = Primitive {
+            attributes,
+            indices: Some(indices_accessor),
+            material: material_idx,
+            mode: 1, // LINES
+            targets: None,
+        };
+
+        // Add mesh
+        let mesh_idx = self.gltf.meshes.len();
+        self.gltf.meshes.push(Mesh {
+            name: None,
+            primitives: vec![primitive],
+            weights: None,
+        });
+
+        mesh_idx
+    }
+
     /// Convert a scene Material to a glTF Material.
     fn add_material(&mut self, material: &Material, scene: &UnifiedScene) -> usize {
         // Convert textures first
@@ -554,6 +591,10 @@ impl GltfBuilder {
 
                 let mesh_idx = match geometry {
                     Geometry::Mesh(mesh) => self.add_mesh(mesh, material_idx),
+                    Geometry::Lines(lines) => {
+                        // Convert line mesh to glTF lines primitive
+                        self.add_line_mesh(lines, material_idx)
+                    }
                     Geometry::Brep(_) | Geometry::Nurbs(_) => {
                         // TODO: Tessellate B-rep/NURBS to mesh
                         // For now, create an empty mesh
