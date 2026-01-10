@@ -41,6 +41,9 @@ pub struct TriangleMesh {
     pub colors: Option<Vec<Vec4>>,
     /// Triangle indices (3 indices per triangle).
     pub indices: Vec<u32>,
+    /// Cached bounding box (for when positions aren't available).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_bounds: Option<BoundingBox>,
 }
 
 impl TriangleMesh {

@@ -302,6 +302,10 @@ enum GeometryJs {
     Mesh {
         vertex_count: usize,
         triangle_count: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bounds_min: Option<[f32; 3]>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bounds_max: Option<[f32; 3]>,
     },
     Primitive {
         primitive_type: String,
@@ -349,10 +353,31 @@ fn scene_to_js(scene: &UnifiedScene) -> Result<JsValue, JsError> {
     let geometries: Vec<GeometryJs> = scene.geometries.iter().map(|geom| {
         use seed_io::scene::Geometry;
         match geom {
-            Geometry::Mesh(mesh) => GeometryJs::Mesh {
-                vertex_count: mesh.positions.len() / 3,
-                triangle_count: mesh.indices.len() / 3,
-            },
+            Geometry::Mesh(mesh) => {
+                // Compute bounds from positions
+                let (bounds_min, bounds_max) = if !mesh.positions.is_empty() {
+                    let mut min = [f32::MAX; 3];
+                    let mut max = [f32::MIN; 3];
+                    for pos in &mesh.positions {
+                        min[0] = min[0].min(pos.x);
+                        min[1] = min[1].min(pos.y);
+                        min[2] = min[2].min(pos.z);
+                        max[0] = max[0].max(pos.x);
+                        max[1] = max[1].max(pos.y);
+                        max[2] = max[2].max(pos.z);
+                    }
+                    (Some(min), Some(max))
+                } else {
+                    (None, None)
+                };
+
+                GeometryJs::Mesh {
+                    vertex_count: mesh.positions.len(),
+                    triangle_count: mesh.indices.len() / 3,
+                    bounds_min,
+                    bounds_max,
+                }
+            }
             Geometry::Primitive(prim) => {
                 use seed_io::scene::PrimitiveGeometry;
                 let ptype = match prim {
@@ -437,9 +462,16 @@ fn scene_from_js(js: JsValue) -> Result<UnifiedScene, JsError> {
                     }),
                 }
             }
-            GeometryJs::Mesh { .. } => {
-                // Create empty mesh placeholder
-                seed_io::scene::Geometry::Mesh(seed_io::scene::TriangleMesh::default())
+            GeometryJs::Mesh { bounds_min, bounds_max, .. } => {
+                // Create mesh with cached bounds (positions are not serialized to JS)
+                let mut mesh = seed_io::scene::TriangleMesh::default();
+                if let (Some(min), Some(max)) = (bounds_min, bounds_max) {
+                    mesh.cached_bounds = Some(seed_io::scene::BoundingBox {
+                        min: glam::Vec3::from_array(*min),
+                        max: glam::Vec3::from_array(*max),
+                    });
+                }
+                seed_io::scene::Geometry::Mesh(mesh)
             }
             GeometryJs::Brep { .. } => {
                 seed_io::scene::Geometry::Brep(seed_io::scene::BrepGeometry::default())

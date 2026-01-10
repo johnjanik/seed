@@ -12,6 +12,51 @@ use seed_core::ast::{
 };
 use seed_core::types::{Identifier, Length, LengthUnit};
 
+/// Sanitize a name for use in Seed documents.
+///
+/// - Keeps ASCII alphanumeric characters, underscores, and hyphens
+/// - Replaces other characters with underscores
+/// - Removes leading/trailing underscores
+/// - Collapses multiple underscores to one
+fn sanitize_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    // Collapse multiple underscores and trim
+    let mut result = String::new();
+    let mut prev_underscore = false;
+    for c in sanitized.chars() {
+        if c == '_' {
+            if !prev_underscore && !result.is_empty() {
+                result.push(c);
+            }
+            prev_underscore = true;
+        } else {
+            result.push(c);
+            prev_underscore = false;
+        }
+    }
+
+    // Trim trailing underscore
+    if result.ends_with('_') {
+        result.pop();
+    }
+
+    if result.is_empty() {
+        "Part".to_string()
+    } else {
+        result
+    }
+}
+
 /// Reader for Seed documents.
 pub struct SeedReader;
 
@@ -370,7 +415,7 @@ fn convert_node_to_element(
             }
 
             return Ok(Some(Element::Part(PartElement {
-                name: Some(Identifier(node.name.clone())),
+                name: Some(Identifier(sanitize_name(&node.name))),
                 geometry: seed_geom,
                 properties,
                 constraints: Vec::new(),
@@ -392,7 +437,7 @@ fn convert_node_to_element(
 
         if !children.is_empty() {
             return Ok(Some(Element::Frame(FrameElement {
-                name: Some(Identifier(node.name.clone())),
+                name: Some(Identifier(sanitize_name(&node.name))),
                 properties: Vec::new(),
                 constraints: Vec::new(),
                 children,
@@ -457,8 +502,14 @@ fn convert_scene_geometry_to_seed(
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "mesh.glb".to_string());
 
-            // Compute bounding box from mesh positions (in meters, convert to mm for AST)
-            let bounds = compute_mesh_bounds(&mesh.positions);
+            // Get bounding box: compute from positions if available, else use cached_bounds
+            let bounds = if !mesh.positions.is_empty() {
+                compute_mesh_bounds(&mesh.positions)
+            } else if let Some(ref cached) = mesh.cached_bounds {
+                cached.clone()
+            } else {
+                crate::scene::BoundingBox::default()
+            };
 
             Ok(SeedGeometry::Import(seed_core::ast::GeometryImport {
                 path,
