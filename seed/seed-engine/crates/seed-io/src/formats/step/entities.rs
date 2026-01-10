@@ -64,6 +64,15 @@ pub enum StepEntity {
     ContextDependentShapeRepresentation(ContextDependentShapeRepresentation),
     RepresentationRelationshipWithTransformation(RepresentationRelationshipWithTransformation),
 
+    // Presentation/styling entities
+    StyledItem(StyledItem),
+    ColourRgb(ColourRgb),
+    SurfaceStyleUsage(SurfaceStyleUsage),
+    SurfaceSideStyle(SurfaceSideStyle),
+    SurfaceStyleFillArea(SurfaceStyleFillArea),
+    FillAreaStyle(FillAreaStyle),
+    FillAreaStyleColour(FillAreaStyleColour),
+
     // Context
     RepresentationContext(RepresentationContext),
     GeometricRepresentationContext(GeometricRepresentationContext),
@@ -408,6 +417,61 @@ pub struct RepresentationRelationshipWithTransformation {
     pub rep1: u64,                   // First shape representation
     pub rep2: u64,                   // Second shape representation
     pub transformation_operator: u64, // ITEM_DEFINED_TRANSFORMATION ref
+}
+
+// ============================================================================
+// Presentation/Styling Entities
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct StyledItem {
+    pub id: u64,
+    pub name: String,
+    pub styles: Vec<u64>,  // References to presentation styles
+    pub item: u64,         // The item being styled (e.g., shape representation)
+}
+
+#[derive(Debug, Clone)]
+pub struct ColourRgb {
+    pub id: u64,
+    pub name: String,
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceStyleUsage {
+    pub id: u64,
+    pub side: String,      // POSITIVE, NEGATIVE, or BOTH
+    pub style: u64,        // Reference to surface side style
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceSideStyle {
+    pub id: u64,
+    pub name: String,
+    pub styles: Vec<u64>,  // Fill area, rendering, etc.
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceStyleFillArea {
+    pub id: u64,
+    pub fill_area: u64,    // Reference to fill area style
+}
+
+#[derive(Debug, Clone)]
+pub struct FillAreaStyle {
+    pub id: u64,
+    pub name: String,
+    pub fill_styles: Vec<u64>,  // Color fill references
+}
+
+#[derive(Debug, Clone)]
+pub struct FillAreaStyleColour {
+    pub id: u64,
+    pub name: String,
+    pub fill_colour: u64,  // Reference to COLOUR_RGB
 }
 
 // ============================================================================
@@ -867,6 +931,59 @@ pub fn convert_entity(instance: &EntityInstance) -> StepEntity {
             }
         }
 
+        // Presentation/styling entities
+        "STYLED_ITEM" => {
+            StepEntity::StyledItem(StyledItem {
+                id,
+                name: params.first().map(extract_string).unwrap_or_default(),
+                styles: params.get(1).map(extract_ref_list).unwrap_or_default(),
+                item: params.get(2).and_then(extract_ref).unwrap_or(0),
+            })
+        }
+        "COLOUR_RGB" => {
+            StepEntity::ColourRgb(ColourRgb {
+                id,
+                name: params.first().map(extract_string).unwrap_or_default(),
+                red: params.get(1).map(|v| extract_real(v) as f32).unwrap_or(0.8),
+                green: params.get(2).map(|v| extract_real(v) as f32).unwrap_or(0.8),
+                blue: params.get(3).map(|v| extract_real(v) as f32).unwrap_or(0.8),
+            })
+        }
+        "SURFACE_STYLE_USAGE" => {
+            StepEntity::SurfaceStyleUsage(SurfaceStyleUsage {
+                id,
+                side: params.first().map(extract_enum).unwrap_or_default(),
+                style: params.get(1).and_then(extract_ref).unwrap_or(0),
+            })
+        }
+        "SURFACE_SIDE_STYLE" => {
+            StepEntity::SurfaceSideStyle(SurfaceSideStyle {
+                id,
+                name: params.first().map(extract_string).unwrap_or_default(),
+                styles: params.get(1).map(extract_ref_list).unwrap_or_default(),
+            })
+        }
+        "SURFACE_STYLE_FILL_AREA" => {
+            StepEntity::SurfaceStyleFillArea(SurfaceStyleFillArea {
+                id,
+                fill_area: params.first().and_then(extract_ref).unwrap_or(0),
+            })
+        }
+        "FILL_AREA_STYLE" => {
+            StepEntity::FillAreaStyle(FillAreaStyle {
+                id,
+                name: params.first().map(extract_string).unwrap_or_default(),
+                fill_styles: params.get(1).map(extract_ref_list).unwrap_or_default(),
+            })
+        }
+        "FILL_AREA_STYLE_COLOUR" => {
+            StepEntity::FillAreaStyleColour(FillAreaStyleColour {
+                id,
+                name: params.first().map(extract_string).unwrap_or_default(),
+                fill_colour: params.get(1).and_then(extract_ref).unwrap_or(0),
+            })
+        }
+
         _ => StepEntity::Unknown {
             type_name: instance.type_name.clone(),
             id,
@@ -1067,5 +1184,75 @@ impl EntityGraph {
         // Transform = target * source^(-1)
         // This maps points from source coordinate system to target
         Some(target_mat * source_mat.inverse())
+    }
+
+    /// Find all styled items.
+    pub fn find_styled_items(&self) -> Vec<&StyledItem> {
+        let mut items = Vec::new();
+        for entity in self.entities.values() {
+            if let StepEntity::StyledItem(item) = entity {
+                items.push(item);
+            }
+        }
+        items
+    }
+
+    /// Get a ColourRgb by ID.
+    pub fn get_colour_rgb(&self, id: u64) -> Option<&ColourRgb> {
+        match self.get(id)? {
+            StepEntity::ColourRgb(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Resolve the color for a styled item by traversing the style chain.
+    /// Returns (r, g, b) color values in 0.0-1.0 range.
+    pub fn resolve_styled_item_color(&self, styled_item: &StyledItem) -> Option<[f32; 3]> {
+        // Traverse: StyledItem -> styles -> SurfaceStyleUsage -> SurfaceSideStyle
+        //           -> styles -> SurfaceStyleFillArea -> FillAreaStyle
+        //           -> fill_styles -> FillAreaStyleColour -> ColourRgb
+        for style_id in &styled_item.styles {
+            if let Some(color) = self.resolve_style_to_color(*style_id) {
+                return Some(color);
+            }
+        }
+        None
+    }
+
+    /// Helper to resolve a presentation style reference to a color.
+    fn resolve_style_to_color(&self, style_id: u64) -> Option<[f32; 3]> {
+        let entity = self.get(style_id)?;
+
+        match entity {
+            StepEntity::SurfaceStyleUsage(usage) => {
+                self.resolve_style_to_color(usage.style)
+            }
+            StepEntity::SurfaceSideStyle(side_style) => {
+                for style in &side_style.styles {
+                    if let Some(color) = self.resolve_style_to_color(*style) {
+                        return Some(color);
+                    }
+                }
+                None
+            }
+            StepEntity::SurfaceStyleFillArea(fill_area) => {
+                self.resolve_style_to_color(fill_area.fill_area)
+            }
+            StepEntity::FillAreaStyle(fill_style) => {
+                for style in &fill_style.fill_styles {
+                    if let Some(color) = self.resolve_style_to_color(*style) {
+                        return Some(color);
+                    }
+                }
+                None
+            }
+            StepEntity::FillAreaStyleColour(colour_style) => {
+                self.resolve_style_to_color(colour_style.fill_colour)
+            }
+            StepEntity::ColourRgb(colour) => {
+                Some([colour.red, colour.green, colour.blue])
+            }
+            _ => None,
+        }
     }
 }
