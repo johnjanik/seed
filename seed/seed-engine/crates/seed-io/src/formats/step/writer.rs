@@ -612,6 +612,7 @@ mod tests {
             texcoords: None,
             colors: None,
             indices: vec![0, 1, 2],
+            cached_bounds: None,
         };
 
         let geom_idx = scene.add_geometry(Geometry::Mesh(mesh));
@@ -645,6 +646,7 @@ mod tests {
             texcoords: None,
             colors: None,
             indices: vec![0, 1, 2],
+            cached_bounds: None,
         };
 
         let material = Material {
@@ -685,6 +687,7 @@ mod tests {
             texcoords: None,
             colors: None,
             indices: vec![0, 1, 2],
+            cached_bounds: None,
         };
 
         let geom_idx = scene.add_geometry(Geometry::Mesh(mesh));
@@ -713,6 +716,7 @@ mod tests {
             texcoords: None,
             colors: None,
             indices: vec![0, 1, 2],
+            cached_bounds: None,
         };
 
         // Second triangle
@@ -726,6 +730,7 @@ mod tests {
             texcoords: None,
             colors: None,
             indices: vec![0, 1, 2],
+            cached_bounds: None,
         };
 
         let geom1 = scene.add_geometry(Geometry::Mesh(mesh1));
