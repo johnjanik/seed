@@ -582,10 +582,6 @@ impl<'a> StepConverter<'a> {
         // Find all representation relationships with transforms
         let rels = self.graph.find_representation_relationships_with_transform();
 
-        #[cfg(debug_assertions)]
-        eprintln!("[DEBUG] Found {} representation relationships with transforms", rels.len());
-
-        let mut applied = 0;
         for rel in &rels {
             // Get the transform matrix
             if let Some(transform) = self.graph.get_relative_transform(rel.transformation_operator) {
@@ -593,12 +589,8 @@ impl<'a> StepConverter<'a> {
                 // The transform positions rep2 in rep1's coordinate system
                 let existing = self.rep_transforms.get(&rel.rep2).copied().unwrap_or(Mat4::IDENTITY);
                 self.rep_transforms.insert(rel.rep2, transform * existing);
-                applied += 1;
             }
         }
-
-        #[cfg(debug_assertions)]
-        eprintln!("[DEBUG] Applied {} transforms to {} representations", applied, self.rep_transforms.len());
     }
 
     /// Get the transform for a representation, if any.
