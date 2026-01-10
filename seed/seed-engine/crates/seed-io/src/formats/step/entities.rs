@@ -59,6 +59,11 @@ pub enum StepEntity {
     ShapeDefinitionRepresentation(ShapeDefinitionRepresentation),
     NextAssemblyUsageOccurrence(NextAssemblyUsageOccurrence),
 
+    // Assembly/transform entities
+    ItemDefinedTransformation(ItemDefinedTransformation),
+    ContextDependentShapeRepresentation(ContextDependentShapeRepresentation),
+    RepresentationRelationshipWithTransformation(RepresentationRelationshipWithTransformation),
+
     // Context
     RepresentationContext(RepresentationContext),
     GeometricRepresentationContext(GeometricRepresentationContext),
@@ -375,9 +380,34 @@ pub struct ShapeDefinitionRepresentation {
 #[derive(Debug, Clone)]
 pub struct NextAssemblyUsageOccurrence {
     pub id: u64,
+    pub nauo_id: String,
     pub name: String,
     pub relating_product: u64,
     pub related_product: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemDefinedTransformation {
+    pub id: u64,
+    pub name: String,
+    pub transform_item_1: u64, // Source axis placement
+    pub transform_item_2: u64, // Target axis placement
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextDependentShapeRepresentation {
+    pub id: u64,
+    pub representation_relation: u64,
+    pub represented_product_relation: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RepresentationRelationshipWithTransformation {
+    pub id: u64,
+    pub name: String,
+    pub rep1: u64,                   // First shape representation
+    pub rep2: u64,                   // Second shape representation
+    pub transformation_operator: u64, // ITEM_DEFINED_TRANSFORMATION ref
 }
 
 // ============================================================================
@@ -789,12 +819,52 @@ pub fn convert_entity(instance: &EntityInstance) -> StepEntity {
             })
         }
         "NEXT_ASSEMBLY_USAGE_OCCURRENCE" => {
+            // NAUO structure: (id_string, name, description, relating_product, related_product, ref_designator)
             StepEntity::NextAssemblyUsageOccurrence(NextAssemblyUsageOccurrence {
                 id,
-                name: params.get(2).map(extract_string).unwrap_or_default(),
-                relating_product: params.first().and_then(extract_ref).unwrap_or(0),
-                related_product: params.get(1).and_then(extract_ref).unwrap_or(0),
+                nauo_id: params.first().map(extract_string).unwrap_or_default(),
+                name: params.get(1).map(extract_string).unwrap_or_default(),
+                relating_product: params.get(3).and_then(extract_ref).unwrap_or(0),
+                related_product: params.get(4).and_then(extract_ref).unwrap_or(0),
             })
+        }
+        "ITEM_DEFINED_TRANSFORMATION" => {
+            StepEntity::ItemDefinedTransformation(ItemDefinedTransformation {
+                id,
+                name: params.first().map(extract_string).unwrap_or_default(),
+                transform_item_1: params.get(2).and_then(extract_ref).unwrap_or(0),
+                transform_item_2: params.get(3).and_then(extract_ref).unwrap_or(0),
+            })
+        }
+        "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION" => {
+            StepEntity::ContextDependentShapeRepresentation(ContextDependentShapeRepresentation {
+                id,
+                representation_relation: params.first().and_then(extract_ref).unwrap_or(0),
+                represented_product_relation: params.get(1).and_then(extract_ref).unwrap_or(0),
+            })
+        }
+        // Complex entity: REPRESENTATION_RELATIONSHIP combined with
+        // REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION + SHAPE_REPRESENTATION_RELATIONSHIP
+        // Flattened params: (name, desc, rep1, rep2, transform_ref)
+        "REPRESENTATION_RELATIONSHIP" => {
+            // Check if this has a transform reference (5th param from complex entity)
+            let transform_op = params.get(4).and_then(extract_ref).unwrap_or(0);
+            if transform_op != 0 {
+                StepEntity::RepresentationRelationshipWithTransformation(
+                    RepresentationRelationshipWithTransformation {
+                        id,
+                        name: params.first().map(extract_string).unwrap_or_default(),
+                        rep1: params.get(2).and_then(extract_ref).unwrap_or(0),
+                        rep2: params.get(3).and_then(extract_ref).unwrap_or(0),
+                        transformation_operator: transform_op,
+                    },
+                )
+            } else {
+                StepEntity::Unknown {
+                    type_name: "REPRESENTATION_RELATIONSHIP".to_string(),
+                    id,
+                }
+            }
         }
 
         _ => StepEntity::Unknown {
@@ -908,5 +978,94 @@ impl EntityGraph {
             }
         }
         shells
+    }
+
+    /// Find all NEXT_ASSEMBLY_USAGE_OCCURRENCE entities.
+    pub fn find_assembly_occurrences(&self) -> Vec<&NextAssemblyUsageOccurrence> {
+        let mut nauos = Vec::new();
+        for entity in self.entities.values() {
+            if let StepEntity::NextAssemblyUsageOccurrence(nauo) = entity {
+                nauos.push(nauo);
+            }
+        }
+        nauos
+    }
+
+    /// Find ItemDefinedTransformation by ID.
+    pub fn get_item_defined_transformation(&self, id: u64) -> Option<&ItemDefinedTransformation> {
+        match self.get(id)? {
+            StepEntity::ItemDefinedTransformation(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Find RepresentationRelationshipWithTransformation entities.
+    pub fn find_representation_relationships_with_transform(
+        &self,
+    ) -> Vec<&RepresentationRelationshipWithTransformation> {
+        let mut rels = Vec::new();
+        for entity in self.entities.values() {
+            if let StepEntity::RepresentationRelationshipWithTransformation(rel) = entity {
+                rels.push(rel);
+            }
+        }
+        rels
+    }
+
+    /// Find ContextDependentShapeRepresentation entities.
+    pub fn find_context_dependent_shape_representations(
+        &self,
+    ) -> Vec<&ContextDependentShapeRepresentation> {
+        let mut cdsrs = Vec::new();
+        for entity in self.entities.values() {
+            if let StepEntity::ContextDependentShapeRepresentation(cdsr) = entity {
+                cdsrs.push(cdsr);
+            }
+        }
+        cdsrs
+    }
+
+    /// Compute a 4x4 transform matrix from an axis placement.
+    /// Returns Mat4 where the Z axis is the placement axis, X is ref_direction.
+    pub fn get_axis_placement_transform(&self, placement_id: u64) -> Option<glam::Mat4> {
+        let placement = match self.get(placement_id)? {
+            StepEntity::Axis2Placement3D(p) => p,
+            _ => return None,
+        };
+
+        let origin = self.get_point(placement.location)?;
+        let z_axis = placement.axis.and_then(|id| self.get_direction(id)).unwrap_or(Vec3::Z);
+        let x_axis = placement
+            .ref_direction
+            .and_then(|id| self.get_direction(id))
+            .unwrap_or_else(|| {
+                // Compute X from Z using Gram-Schmidt
+                let arbitrary = if z_axis.x.abs() < 0.9 {
+                    Vec3::X
+                } else {
+                    Vec3::Y
+                };
+                (arbitrary - z_axis * z_axis.dot(arbitrary)).normalize()
+            });
+        let y_axis = z_axis.cross(x_axis).normalize();
+
+        Some(glam::Mat4::from_cols(
+            x_axis.extend(0.0),
+            y_axis.extend(0.0),
+            z_axis.extend(0.0),
+            origin.extend(1.0),
+        ))
+    }
+
+    /// Compute the relative transform from ItemDefinedTransformation.
+    /// Returns the transform that maps from source to target coordinate system.
+    pub fn get_relative_transform(&self, transform_id: u64) -> Option<glam::Mat4> {
+        let transform = self.get_item_defined_transformation(transform_id)?;
+        let source_mat = self.get_axis_placement_transform(transform.transform_item_1)?;
+        let target_mat = self.get_axis_placement_transform(transform.transform_item_2)?;
+
+        // Transform = target * source^(-1)
+        // This maps points from source coordinate system to target
+        Some(target_mat * source_mat.inverse())
     }
 }

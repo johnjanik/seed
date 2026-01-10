@@ -524,6 +524,8 @@ struct StepConverter<'a> {
     graph: &'a EntityGraph,
     options: &'a ReadOptions,
     scene: UnifiedScene,
+    /// Mapping from shape representation ID to its transform.
+    rep_transforms: std::collections::HashMap<u64, Mat4>,
 }
 
 impl<'a> StepConverter<'a> {
@@ -532,36 +534,38 @@ impl<'a> StepConverter<'a> {
             graph,
             options,
             scene: UnifiedScene::new(),
+            rep_transforms: std::collections::HashMap::new(),
         }
     }
 
     fn convert(mut self) -> Result<UnifiedScene> {
-        // Strategy:
-        // 1. Find all solids (MANIFOLD_SOLID_BREP, FACETED_BREP)
-        // 2. For each solid, extract the shell and faces
-        // 3. Tessellate each face to triangles
-        // 4. Build mesh from tessellated faces
+        // Phase 1: Build assembly transform map
+        self.build_assembly_transforms();
 
-        let solids = self.graph.find_solids();
+        // Phase 2: Process geometry via shape representations
+        // Prioritize representation-based processing to apply assembly transforms
+        let reps = self.graph.find_shape_representations();
 
-        if !solids.is_empty() {
-            // Process each solid
-            for solid_id in &solids {
-                self.process_solid(*solid_id)?;
-            }
-        } else {
-            // Try to find shells directly
-            let shells = self.graph.find_shells();
-            for shell_id in &shells {
-                self.process_shell(*shell_id, "Shell")?;
+        if !reps.is_empty() {
+            // Process each representation with its transform
+            for rep_id in &reps {
+                self.process_shape_representation(*rep_id)?;
             }
         }
 
-        // If still empty, try to find shape representations
+        // If no representations found, try finding solids directly
         if self.scene.geometries.is_empty() {
-            let reps = self.graph.find_shape_representations();
-            for rep_id in &reps {
-                self.process_shape_representation(*rep_id)?;
+            let solids = self.graph.find_solids();
+            if !solids.is_empty() {
+                for solid_id in &solids {
+                    self.process_solid(*solid_id)?;
+                }
+            } else {
+                // Try to find shells directly
+                let shells = self.graph.find_shells();
+                for shell_id in &shells {
+                    self.process_shell(*shell_id, "Shell", Mat4::IDENTITY)?;
+                }
             }
         }
 
@@ -573,7 +577,40 @@ impl<'a> StepConverter<'a> {
         Ok(self.scene)
     }
 
+    /// Build the mapping from shape representations to their accumulated transforms.
+    fn build_assembly_transforms(&mut self) {
+        // Find all representation relationships with transforms
+        let rels = self.graph.find_representation_relationships_with_transform();
+
+        #[cfg(debug_assertions)]
+        eprintln!("[DEBUG] Found {} representation relationships with transforms", rels.len());
+
+        let mut applied = 0;
+        for rel in &rels {
+            // Get the transform matrix
+            if let Some(transform) = self.graph.get_relative_transform(rel.transformation_operator) {
+                // rep2 is the "child" representation that gets transformed
+                // The transform positions rep2 in rep1's coordinate system
+                let existing = self.rep_transforms.get(&rel.rep2).copied().unwrap_or(Mat4::IDENTITY);
+                self.rep_transforms.insert(rel.rep2, transform * existing);
+                applied += 1;
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        eprintln!("[DEBUG] Applied {} transforms to {} representations", applied, self.rep_transforms.len());
+    }
+
+    /// Get the transform for a representation, if any.
+    fn get_representation_transform(&self, rep_id: u64) -> Mat4 {
+        self.rep_transforms.get(&rep_id).copied().unwrap_or(Mat4::IDENTITY)
+    }
+
     fn process_solid(&mut self, solid_id: u64) -> Result<()> {
+        self.process_solid_with_transform(solid_id, Mat4::IDENTITY)
+    }
+
+    fn process_solid_with_transform(&mut self, solid_id: u64, transform: Mat4) -> Result<()> {
         let entity = self.graph.get(solid_id).ok_or_else(|| {
             IoError::InvalidData(format!("Solid {} not found", solid_id))
         })?;
@@ -590,10 +627,10 @@ impl<'a> StepConverter<'a> {
             name
         };
 
-        self.process_shell(shell_id, &name)
+        self.process_shell(shell_id, &name, transform)
     }
 
-    fn process_shell(&mut self, shell_id: u64, name: &str) -> Result<()> {
+    fn process_shell(&mut self, shell_id: u64, name: &str, transform: Mat4) -> Result<()> {
         let entity = self.graph.get(shell_id).ok_or_else(|| {
             IoError::InvalidData(format!("Shell {} not found", shell_id))
         })?;
@@ -612,7 +649,14 @@ impl<'a> StepConverter<'a> {
         }
 
         if !mesh.positions.is_empty() {
-            // Compute normals if requested
+            // Apply transform to all vertices if non-identity
+            if transform != Mat4::IDENTITY {
+                for pos in &mut mesh.positions {
+                    *pos = transform.transform_point3(*pos);
+                }
+            }
+
+            // Compute normals if requested (after transform)
             if self.options.compute_normals {
                 mesh.compute_normals();
             }
@@ -640,11 +684,14 @@ impl<'a> StepConverter<'a> {
             _ => return Ok(()),
         };
 
+        // Look up the transform for this representation
+        let transform = self.get_representation_transform(rep_id);
+
         // Process each item in the representation
         for item_id in items {
             match self.graph.get(*item_id) {
                 Some(StepEntity::ManifoldSolidBrep(_)) | Some(StepEntity::FacetedBrep(_)) => {
-                    self.process_solid(*item_id)?;
+                    self.process_solid_with_transform(*item_id, transform)?;
                 }
                 Some(StepEntity::ClosedShell(_)) | Some(StepEntity::OpenShell(_)) => {
                     let item_name = if name.is_empty() {
@@ -652,11 +699,12 @@ impl<'a> StepConverter<'a> {
                     } else {
                         name.clone()
                     };
-                    self.process_shell(*item_id, &item_name)?;
+                    self.process_shell(*item_id, &item_name, transform)?;
                 }
                 Some(StepEntity::ShellBasedSurfaceModel(model)) => {
-                    for shell_id in &model.shells {
-                        self.process_shell(*shell_id, &name)?;
+                    let shells: Vec<u64> = model.shells.clone();
+                    for shell_id in shells {
+                        self.process_shell(shell_id, &name, transform)?;
                     }
                 }
                 _ => {}
