@@ -356,6 +356,8 @@
 
         /* 3D Viewer */
         .viewer-3d {
+            flex: 1;
+            min-height: 0;
             background: #0a0a15;
             border-top: 1px solid #2d2d44;
             display: none;
@@ -518,8 +520,8 @@
                             <label><input type="checkbox" id="auto-rotate"> Spin</label>
                         </div>
                     </div>
-                    <canvas id="canvas-3d" class="viewer-3d-canvas"></canvas>
-                    <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none;"></canvas>
+                    <canvas id="canvas-3d" class="viewer-3d-canvas" style="background:#1a1a2e;"></canvas>
+                    <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none; background:#ff0000;"></canvas>
                     <div class="viewer-3d-info">
                         <span id="mesh-info">Drag to rotate, scroll to zoom</span>
                     </div>
@@ -1113,7 +1115,6 @@
 
                 // Update file info
                 fileName.textContent = file.name;
-                fileSize.textContent = formatFileSize(file.size);
 
                 // Detect format
                 console.log('Attempting format detection...');
@@ -1472,6 +1473,7 @@
 
             const w = canvas3dWebGL.width;
             const h = canvas3dWebGL.height;
+            console.log('renderWebGL: canvas size=', w, 'x', h, 'glVertexCount=', glVertexCount);
             gl.viewport(0, 0, w, h);
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
@@ -1619,7 +1621,8 @@
 
         // Main render dispatcher
         function render3d() {
-            if (!meshData) return;
+            if (!meshData) { console.log('render3d: no meshData'); return; }
+            console.log('render3d: using', rendererMode.value === 'webgl' && webglAvailable ? 'WebGL' : 'Canvas2D');
             if (rendererMode.value === 'webgl' && webglAvailable) {
                 renderWebGL();
             } else {
@@ -1642,20 +1645,25 @@
                     document.querySelectorAll('.preview-tab').forEach(t => t.classList.remove('active'));
                     document.querySelector('[data-view="3d"]').classList.add('active');
                     currentView = '3d';
-                    updateView();
 
-                    resizeCanvas3d();
+                    // Make view visible first
+                    document.getElementById('view-3d').style.display = 'flex';
 
-                    // Initialize WebGL if not done
-                    if (!gl) initWebGL();
+                    // Wait for browser reflow before measuring canvas
+                    requestAnimationFrame(() => {
+                        resizeCanvas3d();
 
-                    // Upload to GPU
-                    if (webglAvailable) {
-                        uploadMeshToGPU();
-                    }
+                        // Initialize WebGL if not done
+                        if (!gl) initWebGL();
 
-                    updateRendererVisibility();
-                    render3d();
+                        // Upload to GPU
+                        if (webglAvailable) {
+                            uploadMeshToGPU();
+                        }
+
+                        updateRendererVisibility();
+                        render3d();
+                    });
                 }
             } catch (err) {
                 console.error('Mesh load error:', err);
@@ -1665,6 +1673,7 @@
         function resizeCanvas3d() {
             const rect = canvas3d.getBoundingClientRect();
             const dpr = window.devicePixelRatio;
+            console.log('resizeCanvas3d: rect=', rect.width, 'x', rect.height, 'dpr=', dpr);
 
             // Canvas 2D
             canvas3d.width = rect.width * dpr;
@@ -1679,6 +1688,7 @@
 
         function updateRendererVisibility() {
             const useWebGL = rendererMode.value === 'webgl' && webglAvailable;
+            console.log('updateRendererVisibility: useWebGL=', useWebGL, 'webglAvailable=', webglAvailable);
             canvas3d.style.display = useWebGL ? 'none' : 'block';
             canvas3dWebGL.style.display = useWebGL ? 'block' : 'none';
         }
