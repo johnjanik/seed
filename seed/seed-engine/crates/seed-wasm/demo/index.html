@@ -1115,9 +1115,9 @@
 
                 fileInfo.classList.add('visible');
 
-                // Read and get stats
+                // Read and get stats (pass filename for Seed Import syntax)
                 status.textContent = 'Parsing...';
-                currentScene = fileConverter.read(currentFileData);
+                currentScene = fileConverter.readWithFilename(currentFileData, file.name);
 
                 // Update scene stats
                 updateSceneStats(currentScene);

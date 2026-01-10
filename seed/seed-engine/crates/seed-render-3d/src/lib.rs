@@ -20,13 +20,28 @@ pub use material::{Material, Light};
 pub use scene::{Scene3D, SceneObject, Camera, build_scene};
 pub use renderer::SoftwareRenderer3D;
 
-use seed_core::{RenderError, Geometry, Primitive};
+use seed_core::{RenderError, Geometry, GeometryImport, Primitive};
 
 /// Create a 3D shape from geometry definition.
 pub fn create_shape(geometry: &Geometry) -> Result<Shape, RenderError> {
     match geometry {
         Geometry::Primitive(prim) => create_primitive(prim),
         Geometry::Csg(op) => create_csg(op),
+        Geometry::Import(import) => create_import_placeholder(import),
+    }
+}
+
+/// Create a placeholder box for imported geometry.
+fn create_import_placeholder(import: &GeometryImport) -> Result<Shape, RenderError> {
+    if let Some(bounds) = &import.bounds {
+        // Create a box matching the bounding box dimensions
+        let w = bounds.max[0] - bounds.min[0];
+        let h = bounds.max[1] - bounds.min[1];
+        let d = bounds.max[2] - bounds.min[2];
+        Ok(Shape::box_shape(w.max(1.0), h.max(1.0), d.max(1.0)))
+    } else {
+        // Default 100mm cube
+        Ok(Shape::box_shape(100.0, 100.0, 100.0))
     }
 }
 

@@ -90,6 +90,21 @@ impl FileConverter {
         scene_to_js(&scene)
     }
 
+    /// Read a 3D file with filename for metadata.
+    ///
+    /// The filename is stored in scene metadata for use when converting to Seed format.
+    #[wasm_bindgen(js_name = readWithFilename)]
+    pub fn read_with_filename(&self, data: &[u8], filename: &str) -> Result<JsValue, JsError> {
+        let options = ReadOptions::default();
+        let mut scene = self.registry.read(data, &options)
+            .map_err(|e| JsError::new(&format!("Read error: {}", e)))?;
+
+        // Store the filename in scene metadata
+        scene.metadata.source_path = Some(filename.to_string());
+
+        scene_to_js(&scene)
+    }
+
     /// Read a 3D file with explicit format hint.
     #[wasm_bindgen(js_name = readAs)]
     pub fn read_as(&self, data: &[u8], format: &str) -> Result<JsValue, JsError> {
@@ -313,6 +328,10 @@ struct UnifiedSceneJs {
     roots: Vec<usize>,
     geometries: Vec<GeometryJs>,
     materials: Vec<MaterialJs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_format: Option<String>,
 }
 
 /// Convert UnifiedScene to JavaScript-friendly format.
@@ -369,6 +388,8 @@ fn scene_to_js(scene: &UnifiedScene) -> Result<JsValue, JsError> {
         roots: scene.roots.clone(),
         geometries,
         materials,
+        source_path: scene.metadata.source_path.clone(),
+        source_format: scene.metadata.source_format.clone(),
     };
 
     serde_wasm_bindgen::to_value(&scene_js)
@@ -445,6 +466,10 @@ fn scene_from_js(js: JsValue) -> Result<UnifiedScene, JsError> {
     }
 
     scene.roots = scene_js.roots;
+
+    // Restore metadata
+    scene.metadata.source_path = scene_js.source_path;
+    scene.metadata.source_format = scene_js.source_format;
 
     Ok(scene)
 }

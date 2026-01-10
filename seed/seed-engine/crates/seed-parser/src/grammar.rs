@@ -2325,7 +2325,7 @@ fn parse_icon_source(s: &str) -> IconSource {
 }
 
 /// Parse a geometry value string into a Geometry type.
-/// Supports: Box(w, h, d), Sphere(r), Cylinder(r, h)
+/// Supports: Box(w, h, d), Sphere(r), Cylinder(r, h), Import("path")
 fn parse_geometry(s: &str) -> Result<Geometry, ParseError> {
     let s = s.trim();
 
@@ -2356,13 +2356,84 @@ fn parse_geometry(s: &str) -> Result<Geometry, ParseError> {
         }
     }
 
+    // Parse Import("path") or Import("path", format: "step")
+    if let Some(args) = s.strip_prefix("Import(").and_then(|s| s.strip_suffix(')')) {
+        return parse_geometry_import(args);
+    }
+
     // Default: couldn't parse
     Err(ParseError::UnexpectedToken {
         found: s.to_string(),
-        expected: "geometry (Box, Sphere, or Cylinder)".to_string(),
+        expected: "geometry (Box, Sphere, Cylinder, or Import)".to_string(),
         line: 0,
         column: 0,
     })
+}
+
+/// Parse Import() arguments: "path" or "path", format: "step"
+fn parse_geometry_import(args: &str) -> Result<Geometry, ParseError> {
+    let args = args.trim();
+
+    // Find the path string (first quoted string)
+    let (path, rest) = parse_quoted_string_simple(args)?;
+
+    // Check for optional format parameter
+    let rest = rest.trim();
+    let format = if rest.starts_with(',') {
+        let rest = rest[1..].trim();
+        if let Some(rest) = rest.strip_prefix("format:").or_else(|| rest.strip_prefix("format :")) {
+            let rest = rest.trim();
+            let (fmt, _) = parse_quoted_string_simple(rest)?;
+            Some(fmt)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok(Geometry::Import(GeometryImport {
+        path,
+        format,
+        bounds: None, // Bounds are computed at load time, not in the source
+    }))
+}
+
+/// Simple quoted string parser for Import paths.
+fn parse_quoted_string_simple(s: &str) -> Result<(String, &str), ParseError> {
+    let s = s.trim();
+
+    // Find opening quote
+    let quote_char = s.chars().next().ok_or_else(|| ParseError::UnexpectedToken {
+        found: "end of input".to_string(),
+        expected: "quoted string".to_string(),
+        line: 0,
+        column: 0,
+    })?;
+
+    if quote_char != '"' && quote_char != '\'' {
+        return Err(ParseError::UnexpectedToken {
+            found: quote_char.to_string(),
+            expected: "quoted string".to_string(),
+            line: 0,
+            column: 0,
+        });
+    }
+
+    // Find closing quote
+    let rest = &s[1..];
+    if let Some(end_pos) = rest.find(quote_char) {
+        let content = &rest[..end_pos];
+        let remaining = &rest[end_pos + 1..];
+        Ok((content.to_string(), remaining))
+    } else {
+        Err(ParseError::UnexpectedToken {
+            found: "unterminated string".to_string(),
+            expected: "closing quote".to_string(),
+            line: 0,
+            column: 0,
+        })
+    }
 }
 
 /// Parse a length value for geometry (e.g., "100mm", "50px").
@@ -3189,6 +3260,51 @@ mod tests {
             } else {
                 panic!("Expected Box geometry");
             }
+        } else {
+            panic!("Expected Part element");
+        }
+    }
+
+    #[test]
+    fn test_parse_part_import() {
+        let input = r#"Part Gear:
+  geometry: Import("./meshes/gear.step")
+"#;
+        let doc = parse(input).unwrap();
+        assert_eq!(doc.elements.len(), 1);
+
+        if let Element::Part(part) = &doc.elements[0] {
+            assert_eq!(part.name.as_ref().unwrap().0, "Gear");
+            if let Geometry::Import(import) = &part.geometry {
+                assert_eq!(import.path, "./meshes/gear.step");
+                assert!(import.format.is_none());
+                assert!(import.bounds.is_none());
+            } else {
+                panic!("Expected Import geometry");
+            }
+        } else {
+            panic!("Expected Part element");
+        }
+    }
+
+    #[test]
+    fn test_parse_part_import_with_format() {
+        let input = r#"Part Assembly:
+  geometry: Import("model.glb", format: "gltf")
+  color: #4080ff
+"#;
+        let doc = parse(input).unwrap();
+
+        if let Element::Part(part) = &doc.elements[0] {
+            assert_eq!(part.name.as_ref().unwrap().0, "Assembly");
+            if let Geometry::Import(import) = &part.geometry {
+                assert_eq!(import.path, "model.glb");
+                assert_eq!(import.format, Some("gltf".to_string()));
+            } else {
+                panic!("Expected Import geometry");
+            }
+            // Should also have color property
+            assert!(!part.properties.is_empty());
         } else {
             panic!("Expected Part element");
         }

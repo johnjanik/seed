@@ -239,6 +239,17 @@ fn build_geometry(geometry: &seed_core::ast::Geometry) -> Option<Shape> {
     match geometry {
         Geometry::Primitive(prim) => build_primitive(prim),
         Geometry::Csg(op) => build_csg(op),
+        Geometry::Import(import) => {
+            // Create placeholder box from bounds
+            if let Some(bounds) = &import.bounds {
+                let w = bounds.max[0] - bounds.min[0];
+                let h = bounds.max[1] - bounds.min[1];
+                let d = bounds.max[2] - bounds.min[2];
+                Some(Shape::box_shape(w.max(1.0), h.max(1.0), d.max(1.0)))
+            } else {
+                Some(Shape::box_shape(100.0, 100.0, 100.0))
+            }
+        }
     }
 }
 

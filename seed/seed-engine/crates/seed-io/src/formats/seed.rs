@@ -203,6 +203,25 @@ fn convert_geometry(geom: &SeedGeometry) -> Result<Geometry> {
     match geom {
         SeedGeometry::Primitive(prim) => convert_primitive(prim),
         SeedGeometry::Csg(csg) => convert_csg(csg),
+        SeedGeometry::Import(import) => {
+            // Import references external files - for now create a placeholder box
+            // based on bounds if available, otherwise a default size.
+            // TODO: Add a scene loader that can resolve Import references
+            let half_extents = if let Some(bounds) = &import.bounds {
+                glam::Vec3::new(
+                    ((bounds.max[0] - bounds.min[0]) / 2.0 / 1000.0) as f32,
+                    ((bounds.max[1] - bounds.min[1]) / 2.0 / 1000.0) as f32,
+                    ((bounds.max[2] - bounds.min[2]) / 2.0 / 1000.0) as f32,
+                )
+            } else {
+                glam::Vec3::splat(0.05) // 100mm default
+            };
+
+            Ok(Geometry::Primitive(PrimitiveGeometry::Box {
+                half_extents,
+                transform: glam::Mat4::IDENTITY,
+            }))
+        }
     }
 }
 
@@ -327,7 +346,10 @@ fn convert_node_to_element(
     // If node has geometry, create a Part element
     if let Some(geom_idx) = node.geometry {
         if let Some(geom) = scene.geometries.get(geom_idx) {
-            let seed_geom = convert_scene_geometry_to_seed(geom)?;
+            // Get source path and format from scene metadata
+            let source_path = scene.metadata.source_path.as_deref();
+            let source_format = scene.metadata.source_format.as_deref();
+            let seed_geom = convert_scene_geometry_to_seed(geom, source_path, source_format)?;
             let mut properties = Vec::new();
 
             // Add material properties
@@ -383,7 +405,11 @@ fn convert_node_to_element(
 }
 
 /// Convert UnifiedScene geometry to Seed geometry.
-fn convert_scene_geometry_to_seed(geom: &Geometry) -> Result<SeedGeometry> {
+fn convert_scene_geometry_to_seed(
+    geom: &Geometry,
+    source_path: Option<&str>,
+    source_format: Option<&str>,
+) -> Result<SeedGeometry> {
     match geom {
         Geometry::Primitive(prim) => {
             let seed_prim = match prim {
@@ -425,14 +451,50 @@ fn convert_scene_geometry_to_seed(geom: &Geometry) -> Result<SeedGeometry> {
             };
             Ok(SeedGeometry::Primitive(seed_prim))
         }
-        Geometry::Mesh(_) | Geometry::Brep(_) | Geometry::Nurbs(_) => {
-            Ok(SeedGeometry::Primitive(Primitive::Box {
-                width: Length::mm(100.0),
-                height: Length::mm(100.0),
-                depth: Length::mm(100.0),
+        Geometry::Mesh(mesh) => {
+            // Create Import with source path if available
+            let path = source_path
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "mesh.glb".to_string());
+
+            // Compute bounding box from mesh positions (in meters, convert to mm for AST)
+            let bounds = compute_mesh_bounds(&mesh.positions);
+
+            Ok(SeedGeometry::Import(seed_core::ast::GeometryImport {
+                path,
+                format: source_format.map(|s| s.to_string()),
+                bounds: Some(seed_core::ast::BoundingBox {
+                    min: [
+                        (bounds.min.x * 1000.0) as f64,
+                        (bounds.min.y * 1000.0) as f64,
+                        (bounds.min.z * 1000.0) as f64,
+                    ],
+                    max: [
+                        (bounds.max.x * 1000.0) as f64,
+                        (bounds.max.y * 1000.0) as f64,
+                        (bounds.max.z * 1000.0) as f64,
+                    ],
+                }),
+            }))
+        }
+        Geometry::Brep(_) | Geometry::Nurbs(_) => {
+            // B-rep and NURBS also use Import
+            let path = source_path
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "geometry.step".to_string());
+
+            Ok(SeedGeometry::Import(seed_core::ast::GeometryImport {
+                path,
+                format: source_format.map(|s| s.to_string()),
+                bounds: None,
             }))
         }
     }
+}
+
+/// Compute bounding box from mesh vertex positions.
+fn compute_mesh_bounds(positions: &[glam::Vec3]) -> crate::scene::BoundingBox {
+    crate::scene::BoundingBox::from_points(positions)
 }
 
 /// Serialize a Seed document to text.
@@ -522,6 +584,29 @@ fn serialize_element(output: &mut String, element: &Element, depth: usize, prett
                     output.push_str(&geom_indent);
                     output.push_str("geometry: Box(100mm, 100mm, 100mm)");
                     output.push('\n');
+                }
+                SeedGeometry::Import(import) => {
+                    output.push_str(&geom_indent);
+                    if let Some(fmt) = &import.format {
+                        output.push_str(&format!(
+                            "geometry: Import(\"{}\", format: \"{}\")",
+                            import.path, fmt
+                        ));
+                    } else {
+                        output.push_str(&format!("geometry: Import(\"{}\")", import.path));
+                    }
+                    output.push('\n');
+
+                    // Add bounds as a comment if available
+                    if let Some(bounds) = &import.bounds {
+                        output.push_str(&geom_indent);
+                        output.push_str(&format!(
+                            "# bounds: [{:.1}, {:.1}, {:.1}] to [{:.1}, {:.1}, {:.1}] mm",
+                            bounds.min[0], bounds.min[1], bounds.min[2],
+                            bounds.max[0], bounds.max[1], bounds.max[2]
+                        ));
+                        output.push('\n');
+                    }
                 }
             }
 

@@ -112,6 +112,19 @@ impl<'a> StepBuilder<'a> {
         match geometry {
             Geometry::Primitive(prim) => self.build_primitive(prim),
             Geometry::Csg(csg) => self.build_csg(csg),
+            Geometry::Import(import) => {
+                // For Import, create a placeholder box based on bounds
+                let (w, h, d) = if let Some(bounds) = &import.bounds {
+                    (
+                        (bounds.max[0] - bounds.min[0]).max(1.0),
+                        (bounds.max[1] - bounds.min[1]).max(1.0),
+                        (bounds.max[2] - bounds.min[2]).max(1.0),
+                    )
+                } else {
+                    (100.0, 100.0, 100.0)
+                };
+                self.build_box(w, h, d)
+            }
         }
     }
 

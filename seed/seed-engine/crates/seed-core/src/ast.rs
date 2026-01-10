@@ -324,9 +324,35 @@ pub struct PartElement {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Geometry {
+    /// Primitive shapes (Box, Sphere, Cylinder)
     Primitive(Primitive),
+    /// CSG operations (Union, Difference, Intersection)
     Csg(CsgOperation),
+    /// External file import (STEP, glTF, STL, etc.)
+    Import(GeometryImport),
     // Future: Sketch, Extrude, Revolve, etc.
+}
+
+/// External geometry file import.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GeometryImport {
+    /// Path to the geometry file (relative or absolute)
+    pub path: String,
+    /// Optional format hint (e.g., "step", "gltf", "stl")
+    pub format: Option<String>,
+    /// Optional bounding box for quick spatial queries
+    pub bounds: Option<BoundingBox>,
+}
+
+/// Axis-aligned bounding box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BoundingBox {
+    /// Minimum corner (width, height, depth from origin)
+    pub min: [f64; 3],
+    /// Maximum corner
+    pub max: [f64; 3],
 }
 
 /// Primitive 3D shapes.
