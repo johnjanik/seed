@@ -20,6 +20,246 @@ struct EdgeCurveInfo {
     end_point: Option<Vec3>,
 }
 
+/// Triangulate a 2D polygon using ear clipping algorithm.
+/// Returns list of triangle indices into the input vertex array.
+fn triangulate_polygon(vertices: &[[f32; 2]]) -> Vec<[usize; 3]> {
+    let n = vertices.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    if n == 3 {
+        return vec![[0, 1, 2]];
+    }
+
+    let mut triangles = Vec::new();
+    let mut indices: Vec<usize> = (0..n).collect();
+
+    // Determine winding order
+    let area = polygon_signed_area(vertices);
+    let ccw = area > 0.0;
+
+    let mut iterations = 0;
+    let max_iterations = n * n; // Safety limit
+
+    while indices.len() > 3 && iterations < max_iterations {
+        iterations += 1;
+        let mut ear_found = false;
+
+        for i in 0..indices.len() {
+            let prev = if i == 0 { indices.len() - 1 } else { i - 1 };
+            let next = if i == indices.len() - 1 { 0 } else { i + 1 };
+
+            let a = indices[prev];
+            let b = indices[i];
+            let c = indices[next];
+
+            // Check if this is a convex vertex (potential ear)
+            if is_convex(vertices[a], vertices[b], vertices[c], ccw) {
+                // Check if any other vertex is inside this triangle
+                let mut is_ear = true;
+                for j in 0..indices.len() {
+                    if j == prev || j == i || j == next {
+                        continue;
+                    }
+                    let p = indices[j];
+                    if point_in_triangle(vertices[p], vertices[a], vertices[b], vertices[c]) {
+                        is_ear = false;
+                        break;
+                    }
+                }
+
+                if is_ear {
+                    triangles.push([a, b, c]);
+                    indices.remove(i);
+                    ear_found = true;
+                    break;
+                }
+            }
+        }
+
+        if !ear_found {
+            break; // No ear found, polygon may be degenerate
+        }
+    }
+
+    // Add final triangle
+    if indices.len() == 3 {
+        triangles.push([indices[0], indices[1], indices[2]]);
+    }
+
+    triangles
+}
+
+/// Compute signed area of a 2D polygon (positive if CCW).
+fn polygon_signed_area(vertices: &[[f32; 2]]) -> f32 {
+    let mut area = 0.0;
+    let n = vertices.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area += vertices[i][0] * vertices[j][1];
+        area -= vertices[j][0] * vertices[i][1];
+    }
+    area / 2.0
+}
+
+/// Check if vertex b is convex (forms a left turn from a to c).
+fn is_convex(a: [f32; 2], b: [f32; 2], c: [f32; 2], ccw: bool) -> bool {
+    let cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    if ccw { cross > 0.0 } else { cross < 0.0 }
+}
+
+/// Check if point p is inside triangle abc.
+fn point_in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
+    let sign = |p1: [f32; 2], p2: [f32; 2], p3: [f32; 2]| -> f32 {
+        (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+    };
+
+    let d1 = sign(p, a, b);
+    let d2 = sign(p, b, c);
+    let d3 = sign(p, c, a);
+
+    let has_neg = (d1 < 0.0) || (d2 < 0.0) || (d3 < 0.0);
+    let has_pos = (d1 > 0.0) || (d2 > 0.0) || (d3 > 0.0);
+
+    !(has_neg && has_pos)
+}
+
+/// Check if segment AB intersects segment CD.
+fn segments_intersect(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> bool {
+    let sign = |p1: [f32; 2], p2: [f32; 2], p3: [f32; 2]| -> f32 {
+        (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+    };
+
+    let d1 = sign(c, d, a);
+    let d2 = sign(c, d, b);
+    let d3 = sign(a, b, c);
+    let d4 = sign(a, b, d);
+
+    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Merge a polygon with holes by creating bridge edges.
+/// Returns merged 2D and 3D vertex arrays.
+fn merge_polygon_with_holes(
+    outer_2d: &[[f32; 2]],
+    outer_3d: &[Vec3],
+    holes_2d: &[Vec<[f32; 2]>],
+    holes_3d: &[Vec<Vec3>],
+) -> (Vec<[f32; 2]>, Vec<Vec3>) {
+    if holes_2d.is_empty() {
+        return (outer_2d.to_vec(), outer_3d.to_vec());
+    }
+
+    let mut result_2d = outer_2d.to_vec();
+    let mut result_3d = outer_3d.to_vec();
+
+    // Process each hole
+    for (hole_2d, hole_3d) in holes_2d.iter().zip(holes_3d.iter()) {
+        if hole_2d.len() < 3 {
+            continue;
+        }
+
+        // Find the rightmost vertex in the hole
+        let mut rightmost_idx = 0;
+        let mut rightmost_x = hole_2d[0][0];
+        for (i, v) in hole_2d.iter().enumerate() {
+            if v[0] > rightmost_x {
+                rightmost_x = v[0];
+                rightmost_idx = i;
+            }
+        }
+
+        let hole_point = hole_2d[rightmost_idx];
+
+        // Find the best connection point on the outer polygon
+        // Look for a vertex visible from the hole point
+        let mut best_idx = 0;
+        let mut best_dist = f32::INFINITY;
+
+        for (i, outer_point) in result_2d.iter().enumerate() {
+            let dist = (outer_point[0] - hole_point[0]).powi(2)
+                + (outer_point[1] - hole_point[1]).powi(2);
+
+            if dist < best_dist {
+                // Check if the connection is valid (doesn't cross edges)
+                let mut valid = true;
+
+                // Check against outer polygon edges
+                for j in 0..result_2d.len() {
+                    let k = (j + 1) % result_2d.len();
+                    if j == i || k == i {
+                        continue;
+                    }
+                    if segments_intersect(hole_point, *outer_point, result_2d[j], result_2d[k]) {
+                        valid = false;
+                        break;
+                    }
+                }
+
+                // Check against hole edges
+                if valid {
+                    for j in 0..hole_2d.len() {
+                        let k = (j + 1) % hole_2d.len();
+                        if j == rightmost_idx || k == rightmost_idx {
+                            continue;
+                        }
+                        if segments_intersect(hole_point, *outer_point, hole_2d[j], hole_2d[k]) {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+
+                if valid {
+                    best_dist = dist;
+                    best_idx = i;
+                }
+            }
+        }
+
+        // Create merged polygon: outer[0..best_idx] + hole (rotated) + bridge back
+        let mut new_2d = Vec::new();
+        let mut new_3d = Vec::new();
+
+        // Add outer vertices up to and including connection point
+        for i in 0..=best_idx {
+            new_2d.push(result_2d[i]);
+            new_3d.push(result_3d[i]);
+        }
+
+        // Add hole vertices starting from rightmost, going around
+        for i in 0..hole_2d.len() {
+            let idx = (rightmost_idx + i) % hole_2d.len();
+            new_2d.push(hole_2d[idx]);
+            new_3d.push(hole_3d[idx]);
+        }
+
+        // Add bridge back (duplicate hole start and outer connection point)
+        new_2d.push(hole_2d[rightmost_idx]);
+        new_3d.push(hole_3d[rightmost_idx]);
+
+        new_2d.push(result_2d[best_idx]);
+        new_3d.push(result_3d[best_idx]);
+
+        // Add remaining outer vertices
+        for i in (best_idx + 1)..result_2d.len() {
+            new_2d.push(result_2d[i]);
+            new_3d.push(result_3d[i]);
+        }
+
+        result_2d = new_2d;
+        result_3d = new_3d;
+    }
+
+    (result_2d, result_3d)
+}
+
 /// Reader for STEP files.
 pub struct StepReader;
 
@@ -287,39 +527,95 @@ impl<'a> StepConverter<'a> {
         position_id: u64,
         mesh: &mut TriangleMesh,
     ) -> Result<()> {
-        // Get the plane coordinate system (for future use with proper B-rep tessellation)
-        let _transform = self.get_axis_transform(position_id);
+        let transform = self.get_axis_transform(position_id);
+        let inverse_transform = transform.inverse();
 
-        // Collect vertices from the outer bound
-        let mut vertices = Vec::new();
+        // Collect vertices from the outer bound, sampling curves
+        let mut outer_vertices: Vec<Vec3> = Vec::new();
+        let mut inner_loops: Vec<Vec<Vec3>> = Vec::new();
 
         for bound_id in &face.bounds {
             let bound = self.graph.get(*bound_id);
-            let loop_id = match bound {
-                Some(StepEntity::FaceOuterBound(b)) => b.bound,
-                Some(StepEntity::FaceBound(b)) => b.bound,
+            let (loop_id, is_outer) = match bound {
+                Some(StepEntity::FaceOuterBound(b)) => (b.bound, true),
+                Some(StepEntity::FaceBound(b)) => (b.bound, false),
                 _ => continue,
             };
 
-            // Get edge loop
+            let mut loop_vertices = Vec::new();
+
             if let Some(StepEntity::EdgeLoop(loop_entity)) = self.graph.get(loop_id) {
                 for edge_id in &loop_entity.edges {
-                    if let Some(point) = self.get_edge_start_point(*edge_id) {
-                        vertices.push(point);
+                    // Only sample curved edges; for lines, just add the start point
+                    if self.is_curved_edge(*edge_id) {
+                        // Sample curved edge for smoother boundaries
+                        let edge_points = self.sample_edge_curve(*edge_id, 8);
+                        for point in edge_points {
+                            // Avoid duplicate consecutive points
+                            if loop_vertices.last().map_or(true, |last: &Vec3| (*last - point).length() > 1e-6) {
+                                loop_vertices.push(point);
+                            }
+                        }
+                    } else {
+                        // Linear edge - just add start point (end point will be next edge's start)
+                        if let Some(point) = self.get_edge_start_point(*edge_id) {
+                            if loop_vertices.last().map_or(true, |last: &Vec3| (*last - point).length() > 1e-6) {
+                                loop_vertices.push(point);
+                            }
+                        }
                     }
                 }
             }
+
+            if is_outer {
+                outer_vertices = loop_vertices;
+            } else if !loop_vertices.is_empty() {
+                inner_loops.push(loop_vertices);
+            }
         }
 
-        // Triangulate the polygon (simple fan triangulation)
-        if vertices.len() >= 3 {
+        if outer_vertices.len() < 3 {
+            return Ok(());
+        }
+
+        // Project outer boundary to 2D for triangulation (use plane's local XY)
+        let outer_2d: Vec<[f32; 2]> = outer_vertices
+            .iter()
+            .map(|v| {
+                let local = inverse_transform.transform_point3(*v);
+                [local.x, local.y]
+            })
+            .collect();
+
+        // Project inner loops (holes) to 2D
+        let inner_2d: Vec<Vec<[f32; 2]>> = inner_loops
+            .iter()
+            .map(|hole| {
+                hole.iter()
+                    .map(|v| {
+                        let local = inverse_transform.transform_point3(*v);
+                        [local.x, local.y]
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // Merge holes into outer boundary using bridge edges
+        let (merged_2d, merged_3d) = if inner_2d.is_empty() {
+            (outer_2d, outer_vertices)
+        } else {
+            merge_polygon_with_holes(&outer_2d, &outer_vertices, &inner_2d, &inner_loops)
+        };
+
+        // Triangulate using ear clipping
+        let triangles = triangulate_polygon(&merged_2d);
+
+        if triangles.is_empty() {
+            // Fallback to fan triangulation if ear clipping fails
             let base_idx = mesh.positions.len() as u32;
+            mesh.positions.extend(merged_3d.iter().cloned());
 
-            // Add vertices
-            mesh.positions.extend(vertices.iter().cloned());
-
-            // Triangulate
-            for i in 1..(vertices.len() - 1) {
+            for i in 1..(merged_3d.len() - 1) {
                 if face.same_sense {
                     mesh.indices.push(base_idx);
                     mesh.indices.push(base_idx + i as u32);
@@ -328,6 +624,21 @@ impl<'a> StepConverter<'a> {
                     mesh.indices.push(base_idx);
                     mesh.indices.push(base_idx + (i + 1) as u32);
                     mesh.indices.push(base_idx + i as u32);
+                }
+            }
+        } else {
+            let base_idx = mesh.positions.len() as u32;
+            mesh.positions.extend(merged_3d.iter().cloned());
+
+            for tri in triangles {
+                if face.same_sense {
+                    mesh.indices.push(base_idx + tri[0] as u32);
+                    mesh.indices.push(base_idx + tri[1] as u32);
+                    mesh.indices.push(base_idx + tri[2] as u32);
+                } else {
+                    mesh.indices.push(base_idx + tri[0] as u32);
+                    mesh.indices.push(base_idx + tri[2] as u32);
+                    mesh.indices.push(base_idx + tri[1] as u32);
                 }
             }
         }
@@ -539,6 +850,164 @@ impl<'a> StepConverter<'a> {
             }
             StepEntity::EdgeCurve(ec) => self.graph.get_vertex_coords(ec.end_vertex),
             _ => None,
+        }
+    }
+
+    /// Check if an edge is a curved edge (circle, ellipse, spline) vs a straight line.
+    fn is_curved_edge(&self, edge_id: u64) -> bool {
+        let edge = match self.graph.get(edge_id) {
+            Some(StepEntity::OrientedEdge(oe)) => self.graph.get(oe.edge),
+            _ => return false,
+        };
+
+        let curve_id = match edge {
+            Some(StepEntity::EdgeCurve(ec)) => ec.curve,
+            _ => return false,
+        };
+
+        matches!(
+            self.graph.get(curve_id),
+            Some(StepEntity::Circle(_)) | Some(StepEntity::Ellipse(_))
+        )
+    }
+
+    /// Sample points along an edge curve for smoother boundary tessellation.
+    /// Returns a sequence of points from start to end of the edge.
+    fn sample_edge_curve(&self, edge_id: u64, segments: usize) -> Vec<Vec3> {
+        let segments = segments.max(1);
+
+        // Get the oriented edge
+        let edge = match self.graph.get(edge_id) {
+            Some(e) => e,
+            None => return Vec::new(),
+        };
+
+        let (edge_curve_id, orientation) = match edge {
+            StepEntity::OrientedEdge(oe) => (oe.edge, oe.orientation),
+            _ => return Vec::new(),
+        };
+
+        // Get the edge curve
+        let edge_curve = match self.graph.get(edge_curve_id) {
+            Some(StepEntity::EdgeCurve(ec)) => ec,
+            _ => return Vec::new(),
+        };
+
+        // Get start and end points
+        let start_point = self.graph.get_vertex_coords(edge_curve.start_vertex);
+        let end_point = self.graph.get_vertex_coords(edge_curve.end_vertex);
+
+        let (start, end) = match (start_point, end_point) {
+            (Some(s), Some(e)) => {
+                if orientation { (s, e) } else { (e, s) }
+            }
+            _ => return Vec::new(),
+        };
+
+        // Get the underlying curve geometry
+        let curve = match self.graph.get(edge_curve.curve) {
+            Some(c) => c,
+            None => {
+                // No curve geometry, just return endpoints
+                return vec![start, end];
+            }
+        };
+
+        match curve {
+            StepEntity::Line(_) => {
+                // Linear edge - sample along straight line
+                let mut points = Vec::with_capacity(segments + 1);
+                for i in 0..=segments {
+                    let t = i as f32 / segments as f32;
+                    points.push(start + (end - start) * t);
+                }
+                points
+            }
+            StepEntity::Circle(circle) => {
+                // Circular edge - sample along arc
+                let transform = self.get_axis_transform(circle.position);
+                let inverse = transform.inverse();
+                let radius = circle.radius as f32;
+
+                // Convert endpoints to local coordinates
+                let local_start = inverse.transform_point3(start);
+                let local_end = inverse.transform_point3(end);
+
+                // Compute angles in local XY plane
+                let mut start_angle = local_start.y.atan2(local_start.x);
+                let mut end_angle = local_end.y.atan2(local_end.x);
+
+                // Handle angle wrapping - assume we take the shorter arc
+                // unless the angle difference is very small (full circle edge)
+                let angle_diff = end_angle - start_angle;
+                if angle_diff.abs() < 1e-6 {
+                    // Full circle - use 2π
+                    end_angle = start_angle + std::f32::consts::TAU;
+                } else if angle_diff > std::f32::consts::PI {
+                    start_angle += std::f32::consts::TAU;
+                } else if angle_diff < -std::f32::consts::PI {
+                    end_angle += std::f32::consts::TAU;
+                }
+
+                // Sample points along the arc
+                let mut points = Vec::with_capacity(segments + 1);
+                let z = local_start.z; // Use start point's Z (should be constant for circle)
+
+                for i in 0..=segments {
+                    let t = i as f32 / segments as f32;
+                    let angle = start_angle + (end_angle - start_angle) * t;
+                    let local_point = Vec3::new(
+                        radius * angle.cos(),
+                        radius * angle.sin(),
+                        z,
+                    );
+                    points.push(transform.transform_point3(local_point));
+                }
+                points
+            }
+            StepEntity::Ellipse(ellipse) => {
+                // Elliptical edge - sample along arc
+                let transform = self.get_axis_transform(ellipse.position);
+                let inverse = transform.inverse();
+                let a = ellipse.semi_axis_1 as f32;
+                let b = ellipse.semi_axis_2 as f32;
+
+                // Convert endpoints to local coordinates
+                let local_start = inverse.transform_point3(start);
+                let local_end = inverse.transform_point3(end);
+
+                // Compute parametric angles (not geometric angles)
+                let start_angle = (local_start.y / b).atan2(local_start.x / a);
+                let mut end_angle = (local_end.y / b).atan2(local_end.x / a);
+
+                // Handle angle wrapping
+                let angle_diff = end_angle - start_angle;
+                if angle_diff > std::f32::consts::PI {
+                    end_angle -= std::f32::consts::TAU;
+                } else if angle_diff < -std::f32::consts::PI {
+                    end_angle += std::f32::consts::TAU;
+                }
+
+                // Sample points along the arc
+                let mut points = Vec::with_capacity(segments + 1);
+                let z = local_start.z;
+
+                for i in 0..=segments {
+                    let t = i as f32 / segments as f32;
+                    let angle = start_angle + (end_angle - start_angle) * t;
+                    let local_point = Vec3::new(
+                        a * angle.cos(),
+                        b * angle.sin(),
+                        z,
+                    );
+                    points.push(transform.transform_point3(local_point));
+                }
+                points
+            }
+            _ => {
+                // Unknown curve type - just return endpoints
+                vec![start, end]
+            }
         }
     }
 
