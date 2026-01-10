@@ -19,6 +19,7 @@ members = [
     "crates/seed-analyze",
     "crates/seed-vision",
     "crates/seed-codegen",
+    "crates/seed-io",
     "crates/seed-wasm",
 ]
 
@@ -26,7 +27,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/seed-spec/seed-engine"
+repository = "https://github.com/johnjanik/seed"
 rust-version = "1.75"
 
 [workspace.dependencies]
@@ -49,6 +50,7 @@ seed-gpu = { path = "crates/seed-gpu" }
 seed-json = { path = "crates/seed-json" }
 seed-vision = { path = "crates/seed-vision" }
 seed-codegen = { path = "crates/seed-codegen" }
+seed-io = { path = "crates/seed-io" }
 
 # ECS dependencies
 bitvec = "1.0"
