@@ -520,8 +520,8 @@
                             <label><input type="checkbox" id="auto-rotate"> Spin</label>
                         </div>
                     </div>
-                    <canvas id="canvas-3d" class="viewer-3d-canvas" style="background:#1a1a2e;"></canvas>
-                    <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none; background:#ff0000;"></canvas>
+                    <canvas id="canvas-3d" class="viewer-3d-canvas"></canvas>
+                    <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none;"></canvas>
                     <div class="viewer-3d-info">
                         <span id="mesh-info">Drag to rotate, scroll to zoom</span>
                     </div>
@@ -1473,7 +1473,6 @@
 
             const w = canvas3dWebGL.width;
             const h = canvas3dWebGL.height;
-            console.log('renderWebGL: canvas size=', w, 'x', h, 'glVertexCount=', glVertexCount);
             gl.viewport(0, 0, w, h);
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
@@ -1621,8 +1620,7 @@
 
         // Main render dispatcher
         function render3d() {
-            if (!meshData) { console.log('render3d: no meshData'); return; }
-            console.log('render3d: using', rendererMode.value === 'webgl' && webglAvailable ? 'WebGL' : 'Canvas2D');
+            if (!meshData) return;
             if (rendererMode.value === 'webgl' && webglAvailable) {
                 renderWebGL();
             } else {
@@ -1673,7 +1671,6 @@
         function resizeCanvas3d() {
             const rect = canvas3d.getBoundingClientRect();
             const dpr = window.devicePixelRatio;
-            console.log('resizeCanvas3d: rect=', rect.width, 'x', rect.height, 'dpr=', dpr);
 
             // Canvas 2D
             canvas3d.width = rect.width * dpr;
@@ -1688,7 +1685,6 @@
 
         function updateRendererVisibility() {
             const useWebGL = rendererMode.value === 'webgl' && webglAvailable;
-            console.log('updateRendererVisibility: useWebGL=', useWebGL, 'webglAvailable=', webglAvailable);
             canvas3d.style.display = useWebGL ? 'none' : 'block';
             canvas3dWebGL.style.display = useWebGL ? 'block' : 'none';
         }
