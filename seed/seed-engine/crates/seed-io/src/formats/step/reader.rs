@@ -260,6 +260,109 @@ fn merge_polygon_with_holes(
     (result_2d, result_3d)
 }
 
+/// Project a 3D point onto a cylinder's UV space.
+/// Returns (theta, z) where theta is angle and z is height.
+fn project_to_cylinder_uv(point: Vec3, inverse_transform: glam::Mat4, radius: f32) -> [f32; 2] {
+    let local = inverse_transform.transform_point3(point);
+    let theta = local.y.atan2(local.x);
+    [theta, local.z]
+}
+
+/// Project a 3D point onto a sphere's UV space.
+/// Returns (theta, phi) where theta is azimuthal and phi is polar angle.
+fn project_to_sphere_uv(point: Vec3, inverse_transform: glam::Mat4) -> [f32; 2] {
+    let local = inverse_transform.transform_point3(point).normalize();
+    let theta = local.y.atan2(local.x);
+    let phi = local.z.acos();
+    [theta, phi]
+}
+
+/// Project a 3D point onto a cone's UV space.
+/// Returns (theta, height) normalized parameters.
+fn project_to_cone_uv(point: Vec3, inverse_transform: glam::Mat4) -> [f32; 2] {
+    let local = inverse_transform.transform_point3(point);
+    let theta = local.y.atan2(local.x);
+    [theta, local.z]
+}
+
+/// Project a 3D point onto a torus's UV space.
+/// Returns (major_angle, minor_angle).
+fn project_to_torus_uv(point: Vec3, inverse_transform: glam::Mat4, major_radius: f32) -> [f32; 2] {
+    let local = inverse_transform.transform_point3(point);
+    let major_angle = local.y.atan2(local.x);
+
+    // Project onto the major circle to find the minor circle center
+    let dist_xy = (local.x * local.x + local.y * local.y).sqrt();
+    let minor_angle = local.z.atan2(dist_xy - major_radius);
+
+    [major_angle, minor_angle]
+}
+
+/// Check if a UV point is inside a UV polygon using ray casting.
+fn point_in_uv_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+
+    let mut inside = false;
+    let n = polygon.len();
+    let mut j = n - 1;
+
+    for i in 0..n {
+        let pi = polygon[i];
+        let pj = polygon[j];
+
+        if ((pi[1] > point[1]) != (pj[1] > point[1]))
+            && (point[0] < (pj[0] - pi[0]) * (point[1] - pi[1]) / (pj[1] - pi[1]) + pi[0])
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+
+    inside
+}
+
+/// Normalize an angle to [-π, π] range.
+fn normalize_angle(angle: f32) -> f32 {
+    let mut a = angle;
+    while a > PI {
+        a -= 2.0 * PI;
+    }
+    while a < -PI {
+        a += 2.0 * PI;
+    }
+    a
+}
+
+/// Unwrap angles in a polygon to handle ±π discontinuity.
+fn unwrap_angles(polygon: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if polygon.is_empty() {
+        return Vec::new();
+    }
+
+    let mut result = Vec::with_capacity(polygon.len());
+    result.push(polygon[0]);
+
+    for i in 1..polygon.len() {
+        let prev = result[i - 1];
+        let curr = polygon[i];
+
+        let mut theta = curr[0];
+        // Unwrap angle relative to previous
+        while theta - prev[0] > PI {
+            theta -= 2.0 * PI;
+        }
+        while theta - prev[0] < -PI {
+            theta += 2.0 * PI;
+        }
+
+        result.push([theta, curr[1]]);
+    }
+
+    result
+}
+
 /// Expand knots with multiplicities into full knot vector.
 fn expand_knots(knots: &[f64], multiplicities: &[u32]) -> Vec<f64> {
     let mut result = Vec::new();
@@ -752,145 +855,170 @@ impl<'a> StepConverter<'a> {
         let transform = self.get_axis_transform(position_id);
         let inverse_transform = transform.inverse();
 
-        // Collect all boundary points and analyze edge types
-        let mut local_points: Vec<Vec3> = Vec::new();
-        let mut has_circular_edges = false;
-        let mut angular_bounds: Option<(f32, f32)> = None;
+        // Collect UV boundary polygon from edge loops
+        let (outer_uv, inner_uvs) = self.collect_cylinder_uv_boundary(face, inverse_transform);
 
-        for bound_id in &face.bounds {
-            let bound = self.graph.get(*bound_id);
-            let loop_id = match bound {
-                Some(StepEntity::FaceOuterBound(b)) => b.bound,
-                Some(StepEntity::FaceBound(b)) => b.bound,
-                _ => continue,
-            };
-
-            if let Some(StepEntity::EdgeLoop(loop_entity)) = self.graph.get(loop_id) {
-                for edge_id in &loop_entity.edges {
-                    // Get the curve type for this edge
-                    if let Some(curve_info) = self.get_edge_curve_info(*edge_id) {
-                        if curve_info.is_circle {
-                            has_circular_edges = true;
-                            // Compute angular range from circle endpoints
-                            if let (Some(start), Some(end)) = (curve_info.start_point, curve_info.end_point) {
-                                let local_start = inverse_transform.transform_point3(start);
-                                let local_end = inverse_transform.transform_point3(end);
-
-                                let start_angle = local_start.y.atan2(local_start.x);
-                                let end_angle = local_end.y.atan2(local_end.x);
-
-                                // Update angular bounds
-                                match angular_bounds {
-                                    None => angular_bounds = Some((start_angle.min(end_angle), start_angle.max(end_angle))),
-                                    Some((min_a, max_a)) => {
-                                        angular_bounds = Some((
-                                            min_a.min(start_angle).min(end_angle),
-                                            max_a.max(start_angle).max(end_angle),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Collect edge endpoints for bounds calculation
-                    if let Some(point) = self.get_edge_start_point(*edge_id) {
-                        local_points.push(inverse_transform.transform_point3(point));
-                    }
-                    if let Some(point) = self.get_edge_end_point(*edge_id) {
-                        local_points.push(inverse_transform.transform_point3(point));
-                    }
-                }
-            }
-        }
-
-        if local_points.is_empty() {
+        if outer_uv.len() < 3 {
             return Ok(());
         }
 
-        // Compute z bounds from local points
-        let mut min_z = f32::MAX;
-        let mut max_z = f32::MIN;
-        for p in &local_points {
-            min_z = min_z.min(p.z);
-            max_z = max_z.max(p.z);
-        }
-
-        let height = max_z - min_z;
-        if height <= 1e-6 {
-            return Ok(());
-        }
-
-        // Determine angular range
-        let (theta_min, theta_max) = if has_circular_edges {
-            // Use detected angular bounds, but ensure we cover the arc properly
-            match angular_bounds {
-                Some((min_a, max_a)) => {
-                    // Handle wrap-around: if range is small, it might be a full circle
-                    let range = max_a - min_a;
-                    if range < 0.1 {
-                        // Points are close together - likely full circle
-                        (-PI, PI)
-                    } else if range > 2.0 * PI - 0.1 {
-                        // Nearly full circle
-                        (-PI, PI)
-                    } else {
-                        (min_a, max_a)
-                    }
-                }
-                None => (-PI, PI),
-            }
+        // Merge holes into outer boundary if needed
+        let (merged_uv, _) = if inner_uvs.is_empty() {
+            (outer_uv.clone(), Vec::<Vec3>::new())
         } else {
-            // No circular edges - compute from point angles
-            let mut min_angle = f32::MAX;
-            let mut max_angle = f32::MIN;
-            for p in &local_points {
-                let angle = p.y.atan2(p.x);
-                min_angle = min_angle.min(angle);
-                max_angle = max_angle.max(angle);
-            }
+            // Convert UV arrays for hole merging
+            let outer_3d: Vec<Vec3> = outer_uv.iter().map(|uv| Vec3::new(uv[0], uv[1], 0.0)).collect();
+            let inner_3d: Vec<Vec<Vec3>> = inner_uvs
+                .iter()
+                .map(|hole| hole.iter().map(|uv| Vec3::new(uv[0], uv[1], 0.0)).collect())
+                .collect();
+            let inner_2d_ref: Vec<Vec<[f32; 2]>> = inner_uvs.clone();
 
-            let range = max_angle - min_angle;
-            if range < 0.1 || range > 2.0 * PI - 0.1 {
-                (-PI, PI)
-            } else {
-                (min_angle, max_angle)
-            }
+            let (merged_2d, _merged_3d) = merge_polygon_with_holes(
+                &outer_uv,
+                &outer_3d,
+                &inner_2d_ref,
+                &inner_3d,
+            );
+            (merged_2d, Vec::<Vec3>::new())
         };
 
-        // Calculate segments based on angular range
-        let angular_range = theta_max - theta_min;
-        let u_segments = ((angular_range.abs() / (PI / 12.0)).ceil() as u32).max(4).min(48);
-        let v_segments = ((height / (radius * 0.2)).ceil() as u32).max(2).min(24);
-
-        let base_idx = mesh.positions.len() as u32;
-
-        // Generate cylinder vertices
-        for j in 0..=v_segments {
-            let z = min_z + (j as f32 / v_segments as f32) * height;
-            for i in 0..=u_segments {
-                let theta = theta_min + (i as f32 / u_segments as f32) * angular_range;
-                let x = radius * theta.cos();
-                let y = radius * theta.sin();
-                let local = Vec3::new(x, y, z);
-                let world = transform.transform_point3(local);
-                mesh.positions.push(world);
-            }
+        if merged_uv.len() < 3 {
+            return Ok(());
         }
 
-        // Generate indices
-        for j in 0..v_segments {
-            for i in 0..u_segments {
-                let row_size = u_segments + 1;
-                let i0 = base_idx + j * row_size + i;
-                let i1 = base_idx + j * row_size + i + 1;
-                let i2 = base_idx + (j + 1) * row_size + i + 1;
-                let i3 = base_idx + (j + 1) * row_size + i;
+        // Triangulate the UV polygon using ear clipping
+        let triangles = triangulate_polygon(&merged_uv);
 
-                if face.same_sense {
-                    mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
-                } else {
-                    mesh.indices.extend_from_slice(&[i0, i2, i1, i0, i3, i2]);
+        if triangles.is_empty() {
+            // Fallback: compute UV bounding box and use grid tessellation
+            let mut min_theta = f32::MAX;
+            let mut max_theta = f32::MIN;
+            let mut min_z = f32::MAX;
+            let mut max_z = f32::MIN;
+
+            for uv in &merged_uv {
+                min_theta = min_theta.min(uv[0]);
+                max_theta = max_theta.max(uv[0]);
+                min_z = min_z.min(uv[1]);
+                max_z = max_z.max(uv[1]);
+            }
+
+            let angular_range = max_theta - min_theta;
+            let height = max_z - min_z;
+
+            if angular_range <= 1e-6 || height <= 1e-6 {
+                return Ok(());
+            }
+
+            let u_segments = ((angular_range.abs() / (PI / 12.0)).ceil() as u32).max(4).min(48);
+            let v_segments = ((height / (radius * 0.2)).ceil() as u32).max(2).min(24);
+
+            let base_idx = mesh.positions.len() as u32;
+
+            // Generate cylinder vertices
+            for j in 0..=v_segments {
+                let z = min_z + (j as f32 / v_segments as f32) * height;
+                for i in 0..=u_segments {
+                    let theta = min_theta + (i as f32 / u_segments as f32) * angular_range;
+                    let x = radius * theta.cos();
+                    let y = radius * theta.sin();
+                    let local = Vec3::new(x, y, z);
+                    let world = transform.transform_point3(local);
+                    mesh.positions.push(world);
+                }
+            }
+
+            // Generate indices
+            for j in 0..v_segments {
+                for i in 0..u_segments {
+                    let row_size = u_segments + 1;
+                    let i0 = base_idx + j * row_size + i;
+                    let i1 = base_idx + j * row_size + i + 1;
+                    let i2 = base_idx + (j + 1) * row_size + i + 1;
+                    let i3 = base_idx + (j + 1) * row_size + i;
+
+                    if face.same_sense {
+                        mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
+                    } else {
+                        mesh.indices.extend_from_slice(&[i0, i2, i1, i0, i3, i2]);
+                    }
+                }
+            }
+        } else {
+            // For proper curvature, use grid tessellation within UV bounds
+            // Compute UV bounding box
+            let mut min_theta = f32::MAX;
+            let mut max_theta = f32::MIN;
+            let mut min_z = f32::MAX;
+            let mut max_z = f32::MIN;
+
+            for uv in &merged_uv {
+                min_theta = min_theta.min(uv[0]);
+                max_theta = max_theta.max(uv[0]);
+                min_z = min_z.min(uv[1]);
+                max_z = max_z.max(uv[1]);
+            }
+
+            let angular_range = max_theta - min_theta;
+            let height = max_z - min_z;
+
+            if angular_range <= 1e-6 || height <= 1e-6 {
+                return Ok(());
+            }
+
+            // Use finer grid for proper curvature
+            let u_segments = ((angular_range.abs() / (PI / 16.0)).ceil() as u32).max(4).min(48);
+            let v_segments = ((height / (radius * 0.15)).ceil() as u32).max(2).min(32);
+
+            let base_idx = mesh.positions.len() as u32;
+
+            // Generate grid vertices, filtering by UV boundary
+            let mut vertex_indices: Vec<Vec<Option<u32>>> = Vec::new();
+            let mut current_idx = base_idx;
+
+            for j in 0..=v_segments {
+                let z = min_z + (j as f32 / v_segments as f32) * height;
+                let mut row = Vec::new();
+
+                for i in 0..=u_segments {
+                    let theta = min_theta + (i as f32 / u_segments as f32) * angular_range;
+                    let uv_point = [theta, z];
+
+                    // Check if point is inside UV boundary (with margin for edges)
+                    let inside = point_in_uv_polygon(uv_point, &merged_uv)
+                        || i == 0 || i == u_segments || j == 0 || j == v_segments;
+
+                    if inside {
+                        let x = radius * theta.cos();
+                        let y = radius * theta.sin();
+                        let local = Vec3::new(x, y, z);
+                        let world = transform.transform_point3(local);
+                        mesh.positions.push(world);
+                        row.push(Some(current_idx));
+                        current_idx += 1;
+                    } else {
+                        row.push(None);
+                    }
+                }
+                vertex_indices.push(row);
+            }
+
+            // Generate triangles only for quads where all 4 vertices exist
+            for j in 0..v_segments as usize {
+                for i in 0..u_segments as usize {
+                    let i0 = vertex_indices[j][i];
+                    let i1 = vertex_indices[j][i + 1];
+                    let i2 = vertex_indices[j + 1][i + 1];
+                    let i3 = vertex_indices[j + 1][i];
+
+                    if let (Some(v0), Some(v1), Some(v2), Some(v3)) = (i0, i1, i2, i3) {
+                        if face.same_sense {
+                            mesh.indices.extend_from_slice(&[v0, v1, v2, v0, v2, v3]);
+                        } else {
+                            mesh.indices.extend_from_slice(&[v0, v2, v1, v0, v3, v2]);
+                        }
+                    }
                 }
             }
         }
@@ -947,6 +1075,63 @@ impl<'a> StepConverter<'a> {
             StepEntity::EdgeCurve(ec) => self.graph.get_vertex_coords(ec.end_vertex),
             _ => None,
         }
+    }
+
+    /// Collect the outer boundary of a face as a UV polygon for a cylindrical surface.
+    /// Returns (outer_uv, inner_uvs) where each is a Vec of [theta, z] coordinates.
+    fn collect_cylinder_uv_boundary(
+        &self,
+        face: &AdvancedFace,
+        inverse_transform: glam::Mat4,
+    ) -> (Vec<[f32; 2]>, Vec<Vec<[f32; 2]>>) {
+        let mut outer_uv: Vec<[f32; 2]> = Vec::new();
+        let mut inner_uvs: Vec<Vec<[f32; 2]>> = Vec::new();
+
+        for bound_id in &face.bounds {
+            let bound = self.graph.get(*bound_id);
+            let (loop_id, is_outer) = match bound {
+                Some(StepEntity::FaceOuterBound(b)) => (b.bound, true),
+                Some(StepEntity::FaceBound(b)) => (b.bound, false),
+                _ => continue,
+            };
+
+            let mut loop_uv = Vec::new();
+
+            if let Some(StepEntity::EdgeLoop(loop_entity)) = self.graph.get(loop_id) {
+                for edge_id in &loop_entity.edges {
+                    // Sample edge points and project to UV
+                    let edge_points = if self.is_curved_edge(*edge_id) {
+                        self.sample_edge_curve(*edge_id, 16)
+                    } else {
+                        // For lines, sample a few points
+                        self.sample_edge_curve(*edge_id, 4)
+                    };
+
+                    for point in edge_points {
+                        let uv = project_to_cylinder_uv(point, inverse_transform, 1.0);
+                        // Avoid duplicate consecutive points
+                        if loop_uv.last().map_or(true, |last: &[f32; 2]| {
+                            (last[0] - uv[0]).abs() > 1e-6 || (last[1] - uv[1]).abs() > 1e-6
+                        }) {
+                            loop_uv.push(uv);
+                        }
+                    }
+                }
+            }
+
+            if !loop_uv.is_empty() {
+                // Unwrap angles to handle ±π discontinuity
+                let unwrapped = unwrap_angles(&loop_uv);
+
+                if is_outer {
+                    outer_uv = unwrapped;
+                } else {
+                    inner_uvs.push(unwrapped);
+                }
+            }
+        }
+
+        (outer_uv, inner_uvs)
     }
 
     /// Check if an edge is a curved edge (circle, ellipse, spline) vs a straight line.
