@@ -392,9 +392,17 @@
             color: #ccc;
             font-size: 0.6rem;
         }
-        .viewer-3d-canvas {
+        .viewer-3d-canvas-container {
             flex: 1;
+            position: relative;
             min-height: 200px;
+        }
+        .viewer-3d-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
             display: block;
             cursor: grab;
         }
@@ -520,8 +528,10 @@
                             <label><input type="checkbox" id="auto-rotate"> Spin</label>
                         </div>
                     </div>
-                    <canvas id="canvas-3d" class="viewer-3d-canvas"></canvas>
-                    <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none;"></canvas>
+                    <div class="viewer-3d-canvas-container">
+                        <canvas id="canvas-3d" class="viewer-3d-canvas"></canvas>
+                        <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none;"></canvas>
+                    </div>
                     <div class="viewer-3d-info">
                         <span id="mesh-info">Drag to rotate, scroll to zoom</span>
                     </div>
@@ -572,7 +582,6 @@
         const btnClearRef = document.getElementById('btn-clear-ref');
 
         status.textContent = 'JS loaded...';
-        console.log('Step 1: JS loaded');
 
         let engine = null;
         let wasmModule = null;
@@ -919,20 +928,14 @@
             }
         });
 
-        console.log('Step 2: Event listeners attached');
 
         function doRender() {
-            console.log('doRender called');
             if (!engine) { alert('Engine not ready'); return; }
             try {
                 errorContainer.style.display = 'none';
-                console.log('Parsing:', editor.value);
                 engine.parse(editor.value);
-                console.log('Parsed, computing layout...');
                 engine.layout();
-                console.log('Layout done, exporting PNG...');
                 const pngData = engine.exportPng();
-                console.log('PNG exported, size:', pngData.length);
 
                 // Create data URL
                 let binary = '';
@@ -949,7 +952,6 @@
 
                 const img = new Image();
                 img.onload = () => {
-                    console.log('Image loaded:', img.width, 'x', img.height);
                     canvas.width = img.width;
                     canvas.height = img.height;
                     canvas.getContext('2d').drawImage(img, 0, 0);
@@ -1014,17 +1016,12 @@
 
         // Load WASM
         try {
-            console.log('Step 3: Loading WASM...');
             const module = await import('../pkg/seed_wasm.js');
-            console.log('Step 4: Module loaded');
-
             await module.default();
-            console.log('Step 5: WASM initialized');
 
             wasmModule = module;
             engine = new module.SeedEngine();
             const version = module.getVersion();
-            console.log('Step 6: Ready, version:', version);
 
             status.textContent = 'Ready (v' + version + ')';
             status.classList.add('ready');
@@ -1086,11 +1083,6 @@
             converterModule = module;
             fileConverter = new module.FileConverter();
 
-            // Log supported formats
-            const readFormats = module.getSupportedReadFormats();
-            const writeFormats = module.getSupportedWriteFormats();
-            console.log('Supported read formats:', readFormats);
-            console.log('Supported write formats:', writeFormats);
         }
 
         async function handleFileImport(file) {
@@ -1108,18 +1100,11 @@
                 const arrayBuffer = await file.arrayBuffer();
                 currentFileData = new Uint8Array(arrayBuffer);
 
-                // Debug: show first 100 bytes
-                const firstBytes = new TextDecoder().decode(currentFileData.slice(0, 100));
-                console.log('File first 100 bytes:', firstBytes);
-                console.log('File size:', currentFileData.length, 'bytes');
-
                 // Update file info
                 fileName.textContent = file.name;
 
                 // Detect format
-                console.log('Attempting format detection...');
                 const detectedFormat = converterModule.detectFileFormat(currentFileData);
-                console.log('Detected format:', detectedFormat);
                 if (detectedFormat) {
                     fileFormat.textContent = detectedFormat.toUpperCase();
                     fileFormat.className = 'format-badge format-' + detectedFormat;
@@ -1136,6 +1121,15 @@
 
                 // Update scene stats
                 updateSceneStats(currentScene);
+
+                // Convert to Seed source and display in editor
+                try {
+                    const seedData = fileConverter.write(currentScene, 'seed');
+                    const seedSource = new TextDecoder().decode(seedData);
+                    editor.value = seedSource;
+                } catch (seedErr) {
+                    // Seed conversion optional - not all formats convert cleanly
+                }
 
                 status.textContent = 'Ready';
                 status.classList.add('ready');
@@ -1275,12 +1269,13 @@
             uniform bool uWireframe;
             void main() {
                 if (uWireframe) {
-                    gl_FragColor = vec4(0.4, 0.5, 0.92, 1.0);
+                    gl_FragColor = vec4(0.3, 0.5, 0.9, 1.0);
                 } else {
-                    vec3 normal = normalize(vNormal);
-                    float diffuse = max(dot(normal, uLightDir), 0.0);
-                    float ambient = 0.3;
-                    vec3 color = uBaseColor * (ambient + diffuse * 0.7);
+                    vec3 N = normalize(vNormal);
+                    vec3 L = normalize(uLightDir);
+                    float diff = max(dot(N, L), 0.0);
+                    float amb = 0.3;
+                    vec3 color = uBaseColor * (amb + diff * 0.7);
                     gl_FragColor = vec4(color, 1.0);
                 }
             }
@@ -1288,12 +1283,21 @@
 
         // Initialize WebGL
         function initWebGL() {
+            // Ensure canvas is visible and has dimensions
+            canvas3dWebGL.style.display = 'block';
+
             gl = canvas3dWebGL.getContext('webgl', { antialias: true, alpha: false });
             if (!gl) {
                 console.warn('WebGL not available, using Canvas 2D');
                 rendererMode.value = 'canvas2d';
                 rendererMode.querySelector('option[value="webgl"]').disabled = true;
                 return false;
+            }
+
+            // Enable 32-bit indices extension FIRST (required for meshes > 65535 vertices)
+            const uint32Ext = gl.getExtension('OES_element_index_uint');
+            if (!uint32Ext) {
+                console.warn('OES_element_index_uint not supported, large meshes may fail');
             }
 
             // Compile shaders
@@ -1331,11 +1335,9 @@
 
             gl.enable(gl.DEPTH_TEST);
             gl.enable(gl.CULL_FACE);
-            gl.cullFace(gl.BACK);
-            gl.clearColor(0.04, 0.04, 0.08, 1.0);
+            gl.clearColor(0.08, 0.08, 0.12, 1.0);
 
             webglAvailable = true;
-            console.log('WebGL initialized successfully');
             return true;
         }
 
@@ -1410,9 +1412,6 @@
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glWireframeIndexBuffer);
             gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(wireframeIndices), gl.STATIC_DRAW);
             glWireframeIndexCount = wireframeIndices.length;
-
-            // Enable OES_element_index_uint for large meshes
-            gl.getExtension('OES_element_index_uint');
         }
 
         // Matrix utilities
@@ -1430,12 +1429,16 @@
             return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
         }
 
+        // Column-major matrix multiplication: C = A * B
         function mat4Multiply(a, b) {
             const out = new Float32Array(16);
-            for (let i = 0; i < 4; i++) {
-                for (let j = 0; j < 4; j++) {
-                    out[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] +
-                                     a[i * 4 + 2] * b[8 + j] + a[i * 4 + 3] * b[12 + j];
+            for (let col = 0; col < 4; col++) {
+                for (let row = 0; row < 4; row++) {
+                    out[col * 4 + row] =
+                        a[0 * 4 + row] * b[col * 4 + 0] +
+                        a[1 * 4 + row] * b[col * 4 + 1] +
+                        a[2 * 4 + row] * b[col * 4 + 2] +
+                        a[3 * 4 + row] * b[col * 4 + 3];
                 }
             }
             return out;
@@ -1471,11 +1474,19 @@
         function renderWebGL() {
             if (!gl || !meshData || !webglAvailable) return;
 
-            const w = canvas3dWebGL.width;
-            const h = canvas3dWebGL.height;
+            let w = canvas3dWebGL.width;
+            let h = canvas3dWebGL.height;
+
+            // If canvas has no dimensions, force resize
+            if (w === 0 || h === 0) {
+                resizeCanvas3d();
+                w = canvas3dWebGL.width;
+                h = canvas3dWebGL.height;
+                if (w === 0 || h === 0) return;
+            }
+
             gl.viewport(0, 0, w, h);
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
             gl.useProgram(glProgram);
 
             // Compute model-view matrix
@@ -1621,7 +1632,8 @@
         // Main render dispatcher
         function render3d() {
             if (!meshData) return;
-            if (rendererMode.value === 'webgl' && webglAvailable) {
+            const useWebGL = rendererMode.value === 'webgl' && webglAvailable;
+            if (useWebGL) {
                 renderWebGL();
             } else {
                 renderCanvas2D();
@@ -1647,19 +1659,22 @@
                     // Make view visible first
                     document.getElementById('view-3d').style.display = 'flex';
 
+                    // Initialize WebGL if not done
+                    if (!gl) initWebGL();
+
+                    // Set renderer visibility BEFORE resizing so we measure the right canvas
+                    updateRendererVisibility();
+
                     // Wait for browser reflow before measuring canvas
                     requestAnimationFrame(() => {
+                        // Resize based on the visible canvas
                         resizeCanvas3d();
-
-                        // Initialize WebGL if not done
-                        if (!gl) initWebGL();
 
                         // Upload to GPU
                         if (webglAvailable) {
                             uploadMeshToGPU();
                         }
 
-                        updateRendererVisibility();
                         render3d();
                     });
                 }
@@ -1669,18 +1684,25 @@
         }
 
         function resizeCanvas3d() {
-            const rect = canvas3d.getBoundingClientRect();
+            // Measure whichever canvas is visible
+            const useWebGL = rendererMode.value === 'webgl' && webglAvailable;
+            const visibleCanvas = useWebGL ? canvas3dWebGL : canvas3d;
+            const rect = visibleCanvas.getBoundingClientRect();
             const dpr = window.devicePixelRatio;
 
-            // Canvas 2D
+            // Set dimensions on both canvases
             canvas3d.width = rect.width * dpr;
             canvas3d.height = rect.height * dpr;
             ctx3d.setTransform(1, 0, 0, 1, 0, 0);
             ctx3d.scale(dpr, dpr);
 
-            // WebGL canvas
             canvas3dWebGL.width = rect.width * dpr;
             canvas3dWebGL.height = rect.height * dpr;
+
+            // Update WebGL viewport if context exists
+            if (gl) {
+                gl.viewport(0, 0, canvas3dWebGL.width, canvas3dWebGL.height);
+            }
         }
 
         function updateRendererVisibility() {
