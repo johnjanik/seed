@@ -10,14 +10,15 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #1a1a2e;
             color: #eee;
-            min-height: 100vh;
+            height: 100vh;
+            overflow: hidden;
         }
         .container {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            grid-template-rows: auto 1fr auto;
-            gap: 16px;
-            padding: 16px;
+            grid-template-rows: auto auto 1fr;
+            gap: 12px;
+            padding: 12px;
             height: 100vh;
         }
         header {
@@ -25,73 +26,200 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 8px 0;
+            padding: 4px 0;
         }
         h1 {
-            font-size: 1.5rem;
+            font-size: 1.25rem;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
         }
         .status {
-            font-size: 0.875rem;
-            padding: 4px 12px;
+            font-size: 0.75rem;
+            padding: 3px 10px;
             border-radius: 999px;
             background: #2d2d44;
         }
         .status.ready { background: #1e3a2f; color: #4ade80; }
         .status.error { background: #3a1e1e; color: #f87171; }
+
+        /* Compact toolbar bar */
+        .toolbar-bar {
+            grid-column: 1 / -1;
+            display: flex;
+            gap: 12px;
+            align-items: stretch;
+            background: #16162a;
+            border-radius: 8px;
+            padding: 8px 12px;
+        }
+        .toolbar-section {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 12px;
+            border-right: 1px solid #2d2d44;
+        }
+        .toolbar-section:last-child { border-right: none; }
+        .toolbar-section h3 {
+            font-size: 0.65rem;
+            color: #667eea;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+        .drop-zone-compact {
+            border: 1px dashed #3d3d54;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-size: 0.7rem;
+            color: #888;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            white-space: nowrap;
+        }
+        .drop-zone-compact:hover, .drop-zone-compact.dragover {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.1);
+        }
+        .file-info-compact {
+            display: none;
+            font-size: 0.7rem;
+            color: #ccc;
+            gap: 8px;
+            align-items: center;
+        }
+        .file-info-compact.visible { display: flex; }
+        .format-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        .format-seed { background: #2d5a3d; color: #4ade80; }
+        .format-gltf { background: #3d4a5a; color: #60a5fa; }
+        .format-step { background: #5a4a3d; color: #fbbf24; }
+        .format-usd { background: #5a3d5a; color: #c084fc; }
+        .stat-inline {
+            display: flex;
+            gap: 12px;
+            font-size: 0.7rem;
+        }
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .stat-item .value {
+            color: #667eea;
+            font-weight: 600;
+        }
+        .stat-item .label {
+            color: #666;
+        }
+        .toolbar-section select {
+            padding: 5px 8px;
+            border: none;
+            border-radius: 4px;
+            background: #2d2d44;
+            color: #ccc;
+            font-size: 0.7rem;
+        }
+        .btn-compact {
+            padding: 5px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 500;
+            cursor: pointer;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-compact:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .error-inline {
+            color: #f87171;
+            font-size: 0.65rem;
+            display: none;
+        }
+
+        /* Main content panels */
         .panel {
             background: #16162a;
-            border-radius: 12px;
+            border-radius: 8px;
             overflow: hidden;
             display: flex;
             flex-direction: column;
         }
+        .panel-source {
+            grid-row: 3;
+            grid-column: 1;
+        }
+        .panel-preview {
+            grid-row: 3;
+            grid-column: 2;
+        }
         .panel-header {
-            padding: 12px 16px;
+            padding: 8px 12px;
             background: #1e1e3a;
             font-weight: 500;
-            font-size: 0.875rem;
+            font-size: 0.75rem;
             text-transform: uppercase;
             letter-spacing: 0.05em;
             color: #888;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .panel-header-actions {
+            display: flex;
+            gap: 6px;
+        }
+        .btn-small {
+            padding: 4px 10px;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            cursor: pointer;
+            background: #2d2d44;
+            color: #ccc;
+        }
+        .btn-small:hover { background: #3d3d54; }
+        .btn-small.primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
         }
         #editor {
             flex: 1;
             width: 100%;
-            padding: 16px;
+            padding: 12px;
             background: transparent;
             border: none;
             color: #e0e0e0;
             font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-            font-size: 14px;
-            line-height: 1.6;
+            font-size: 13px;
+            line-height: 1.5;
             resize: none;
             outline: none;
         }
-        .preview-container {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 16px;
-            background: #fff;
-            overflow: auto;
-        }
-        #canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+
+        /* Preview tabs and views */
         .preview-tabs {
             display: flex;
             gap: 0;
             background: #1e1e3a;
         }
         .preview-tab {
-            padding: 8px 16px;
+            padding: 6px 12px;
             background: transparent;
             border: none;
             color: #666;
-            font-size: 0.75rem;
+            font-size: 0.65rem;
             text-transform: uppercase;
             cursor: pointer;
             border-bottom: 2px solid transparent;
@@ -101,8 +229,28 @@
             border-bottom-color: #667eea;
         }
         .preview-tab:hover { color: #888; }
-        .comparison-container {
+        .preview-content {
             flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .preview-2d {
+            flex: 1;
+            min-height: 0;
+        }
+        .preview-container {
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px;
+            background: #fff;
+            overflow: auto;
+        }
+        #canvas { max-width: 100%; max-height: 100%; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .comparison-container {
+            height: 100%;
             display: flex;
             align-items: stretch;
             overflow: hidden;
@@ -113,27 +261,27 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            padding: 16px;
+            padding: 12px;
             background: #fff;
             overflow: auto;
         }
         .comparison-pane.reference { background: #f5f5f5; border-right: 1px solid #ddd; }
         .pane-label {
-            font-size: 0.625rem;
+            font-size: 0.6rem;
             text-transform: uppercase;
             color: #999;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
         #reference-img { max-width: 100%; max-height: 100%; object-fit: contain; }
         .reference-placeholder {
             color: #999;
-            font-size: 0.875rem;
+            font-size: 0.75rem;
             text-align: center;
-            padding: 20px;
+            padding: 16px;
         }
         .comparison-slider {
             display: none;
-            flex: 1;
+            height: 100%;
             position: relative;
             overflow: hidden;
             background: #fff;
@@ -174,9 +322,9 @@
             transform: translate(-50%, -50%);
             background: #667eea;
             color: white;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.625rem;
+            padding: 3px 6px;
+            border-radius: 3px;
+            font-size: 0.5rem;
             white-space: nowrap;
         }
         .diff-overlay {
@@ -189,219 +337,81 @@
             pointer-events: none;
         }
         .diff-overlay.active { display: block; }
-        .opacity-slider { width: 100px; }
-        .toolbar {
-            grid-column: 1 / -1;
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 0.875rem;
-            font-weight: 500;
-            cursor: pointer;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        .btn-secondary { background: #2d2d44; color: #ccc; }
-        .btn-secondary:hover { background: #3d3d54; }
-        .examples select {
-            padding: 10px 16px;
-            border: none;
-            border-radius: 8px;
-            background: #2d2d44;
-            color: #ccc;
-            font-size: 0.875rem;
-            cursor: pointer;
-        }
-        .examples { margin-left: auto; }
-        /* File converter styles */
-        .converter-panel {
-            grid-column: 1 / -1;
-            background: #16162a;
-            border-radius: 12px;
-            padding: 16px;
-            margin-top: 8px;
-        }
-        .converter-header {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            margin-bottom: 16px;
-        }
-        .converter-header h2 {
-            font-size: 1rem;
-            color: #888;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .converter-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 16px;
-        }
-        .converter-section {
+        .info-bar {
+            padding: 6px 12px;
             background: #1e1e3a;
-            border-radius: 8px;
-            padding: 16px;
-        }
-        .converter-section h3 {
-            font-size: 0.75rem;
-            color: #667eea;
-            text-transform: uppercase;
-            margin-bottom: 12px;
-        }
-        .drop-zone {
-            border: 2px dashed #3d3d54;
-            border-radius: 8px;
-            padding: 24px;
-            text-align: center;
-            cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
-        }
-        .drop-zone:hover, .drop-zone.dragover {
-            border-color: #667eea;
-            background: rgba(102, 126, 234, 0.1);
-        }
-        .drop-zone-text { color: #888; font-size: 0.875rem; }
-        .drop-zone-formats { color: #555; font-size: 0.75rem; margin-top: 8px; }
-        .file-info {
-            background: #2d2d44;
-            border-radius: 6px;
-            padding: 12px;
-            margin-top: 12px;
-            display: none;
-        }
-        .file-info.visible { display: block; }
-        .file-info-row {
+            font-size: 0.65rem;
+            color: #666;
             display: flex;
-            justify-content: space-between;
-            font-size: 0.8rem;
-            padding: 4px 0;
-        }
-        .file-info-label { color: #888; }
-        .file-info-value { color: #e0e0e0; font-family: monospace; }
-        .format-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-        .format-seed { background: #2d5a3d; color: #4ade80; }
-        .format-gltf { background: #3d4a5a; color: #60a5fa; }
-        .format-step { background: #5a4a3d; color: #fbbf24; }
-        .format-usd { background: #5a3d5a; color: #c084fc; }
-        .convert-options {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        .convert-options select {
-            padding: 10px 12px;
-            border: none;
-            border-radius: 6px;
-            background: #2d2d44;
-            color: #ccc;
-            font-size: 0.875rem;
-        }
-        .scene-stats {
-            font-size: 0.8rem;
-        }
-        .scene-stats-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            margin-top: 8px;
-        }
-        .stat-box {
-            background: #2d2d44;
-            border-radius: 6px;
-            padding: 12px;
-            text-align: center;
-        }
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: 600;
-            color: #667eea;
-        }
-        .stat-label {
-            font-size: 0.7rem;
-            color: #888;
-            text-transform: uppercase;
+            gap: 12px;
         }
         .error-message {
-            padding: 16px;
+            padding: 8px 12px;
             background: #3a1e1e;
             color: #f87171;
             font-family: monospace;
-            font-size: 0.875rem;
+            font-size: 0.7rem;
             display: none;
         }
+
         /* 3D Viewer */
         .viewer-3d {
             background: #0a0a15;
-            border-radius: 8px;
-            margin-top: 16px;
-            overflow: hidden;
+            border-top: 1px solid #2d2d44;
+            display: none;
+            flex-direction: column;
         }
+        .viewer-3d.visible { display: flex; }
         .viewer-3d-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 8px 12px;
+            padding: 6px 10px;
             background: #1e1e3a;
         }
         .viewer-3d-header h3 {
-            font-size: 0.75rem;
+            font-size: 0.65rem;
             color: #667eea;
             text-transform: uppercase;
             margin: 0;
         }
         .viewer-3d-controls {
             display: flex;
-            gap: 12px;
+            gap: 10px;
             align-items: center;
-            font-size: 0.7rem;
+            font-size: 0.6rem;
             color: #888;
         }
         .viewer-3d-controls select {
-            padding: 4px 8px;
+            padding: 3px 6px;
             border: none;
-            border-radius: 4px;
+            border-radius: 3px;
             background: #2d2d44;
             color: #ccc;
-            font-size: 0.7rem;
+            font-size: 0.6rem;
         }
         .viewer-3d-canvas {
-            width: 100%;
-            height: 300px;
+            flex: 1;
+            min-height: 200px;
             display: block;
             cursor: grab;
         }
         .viewer-3d-canvas:active { cursor: grabbing; }
         .viewer-3d-info {
-            padding: 6px 12px;
+            padding: 4px 10px;
             background: #1e1e3a;
-            font-size: 0.7rem;
+            font-size: 0.6rem;
             color: #666;
         }
-        .info-bar {
-            padding: 8px 16px;
-            background: #1e1e3a;
-            font-size: 0.75rem;
-            color: #666;
-            display: flex;
-            gap: 16px;
-        }
-        @media (max-width: 768px) {
-            .container { grid-template-columns: 1fr; }
+
+        /* Hidden file inputs */
+        input[type="file"] { display: none; }
+
+        @media (max-width: 900px) {
+            .container { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr 1fr; }
+            .panel-source { grid-row: 3; grid-column: 1; }
+            .panel-preview { grid-row: 4; grid-column: 1; }
+            .toolbar-bar { flex-wrap: wrap; }
         }
     </style>
 </head>
@@ -411,167 +421,137 @@
             <h1>Seed Engine</h1>
             <span id="status" class="status">Loading...</span>
         </header>
-        <div class="panel">
-            <div class="panel-header">Source</div>
+
+        <!-- Compact Toolbar Bar -->
+        <div class="toolbar-bar">
+            <!-- Import Section -->
+            <div class="toolbar-section">
+                <h3>Import</h3>
+                <div class="drop-zone-compact" id="drop-zone">Drop file or click</div>
+                <div class="file-info-compact" id="file-info">
+                    <span id="file-name">-</span>
+                    <span id="file-format" class="format-badge">-</span>
+                </div>
+                <input type="file" id="file-input-3d" accept=".gltf,.glb,.step,.stp,.usda,.usdc,.usd,.seed">
+            </div>
+
+            <!-- Scene Info Section -->
+            <div class="toolbar-section">
+                <h3>Scene</h3>
+                <div class="stat-inline" id="scene-stats">
+                    <div class="stat-item"><span class="value" id="stat-nodes">-</span><span class="label">nodes</span></div>
+                    <div class="stat-item"><span class="value" id="stat-geometries">-</span><span class="label">geom</span></div>
+                    <div class="stat-item"><span class="value" id="stat-materials">-</span><span class="label">mat</span></div>
+                </div>
+            </div>
+
+            <!-- Export Section -->
+            <div class="toolbar-section">
+                <h3>Export</h3>
+                <select id="export-format">
+                    <option value="">Format...</option>
+                    <option value="seed">Seed</option>
+                    <option value="gltf">glTF</option>
+                    <option value="step">STEP</option>
+                    <option value="usd">USD</option>
+                </select>
+                <button class="btn-compact" id="btn-convert" disabled>Download</button>
+                <span class="error-inline" id="convert-error"></span>
+            </div>
+        </div>
+
+        <!-- Source Panel (Left) -->
+        <div class="panel panel-source">
+            <div class="panel-header">
+                <span>Source</span>
+                <div class="panel-header-actions">
+                    <select id="examples" class="btn-small">
+                        <option value="">Examples...</option>
+                        <option value="simple">Simple</option>
+                        <option value="nested">Nested</option>
+                        <option value="gradient">Gradient</option>
+                    </select>
+                    <button class="btn-small primary" id="btn-render">Render</button>
+                    <button class="btn-small" id="btn-svg">SVG</button>
+                    <button class="btn-small" id="btn-png">PNG</button>
+                </div>
+            </div>
             <textarea id="editor" spellcheck="false">Frame:
   width: 200px
   height: 100px
   fill: #4a90d9
   corner-radius: 8px</textarea>
         </div>
-        <div class="panel">
-            <div class="panel-header">Preview</div>
+
+        <!-- Preview Panel (Right) -->
+        <div class="panel panel-preview">
+            <div class="panel-header">
+                <span>Preview</span>
+                <div class="panel-header-actions">
+                    <button class="btn-small" id="btn-import">Import Ref</button>
+                    <button class="btn-small" id="btn-clear-ref" style="display:none;">Clear</button>
+                </div>
+            </div>
             <div class="preview-tabs">
-                <button class="preview-tab active" data-view="render">Render</button>
-                <button class="preview-tab" data-view="compare">Side-by-Side</button>
-                <button class="preview-tab" data-view="slider">Slider</button>
+                <button class="preview-tab active" data-view="render">2D</button>
+                <button class="preview-tab" data-view="3d">3D</button>
+                <button class="preview-tab" data-view="compare">Compare</button>
                 <button class="preview-tab" data-view="diff">Diff</button>
             </div>
-            <!-- Render only view -->
-            <div class="preview-container" id="view-render">
-                <canvas id="canvas"></canvas>
-            </div>
-            <!-- Side-by-side comparison view -->
-            <div class="comparison-container" id="view-compare" style="display:none;">
-                <div class="comparison-pane reference">
-                    <div class="pane-label">Reference</div>
-                    <div id="reference-placeholder" class="reference-placeholder">
-                        Click "Import Reference" to load a PNG
+            <div class="preview-content">
+                <!-- 2D Render view -->
+                <div class="preview-2d" id="view-render">
+                    <div class="preview-container">
+                        <canvas id="canvas"></canvas>
                     </div>
-                    <img id="reference-img" style="display:none;">
                 </div>
-                <div class="comparison-pane">
-                    <div class="pane-label">Rendered</div>
-                    <canvas id="canvas-compare"></canvas>
+                <!-- 3D Viewer -->
+                <div class="viewer-3d" id="view-3d">
+                    <div class="viewer-3d-header">
+                        <h3>3D Preview</h3>
+                        <div class="viewer-3d-controls">
+                            <select id="renderer-mode">
+                                <option value="webgl">WebGL</option>
+                                <option value="canvas2d">Canvas 2D</option>
+                            </select>
+                            <label><input type="checkbox" id="wireframe-mode"> Wire</label>
+                            <label><input type="checkbox" id="auto-rotate"> Spin</label>
+                        </div>
+                    </div>
+                    <canvas id="canvas-3d" class="viewer-3d-canvas"></canvas>
+                    <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none;"></canvas>
+                    <div class="viewer-3d-info">
+                        <span id="mesh-info">Drag to rotate, scroll to zoom</span>
+                    </div>
                 </div>
-            </div>
-            <!-- Slider comparison view -->
-            <div class="comparison-slider" id="view-slider">
-                <img id="slider-ref" class="slider-image">
-                <div class="slider-overlay" id="slider-overlay">
-                    <canvas id="canvas-slider" class="slider-image"></canvas>
+                <!-- Side-by-side comparison view -->
+                <div class="comparison-container" id="view-compare" style="display:none;">
+                    <div class="comparison-pane reference">
+                        <div class="pane-label">Reference</div>
+                        <div id="reference-placeholder" class="reference-placeholder">
+                            Click "Import Ref" to load image
+                        </div>
+                        <img id="reference-img" style="display:none;">
+                    </div>
+                    <div class="comparison-pane">
+                        <div class="pane-label">Rendered</div>
+                        <canvas id="canvas-compare"></canvas>
+                    </div>
                 </div>
-                <div class="slider-handle" id="slider-handle"></div>
+                <!-- Diff view -->
+                <div class="preview-container" id="view-diff" style="display:none;">
+                    <canvas id="canvas-diff"></canvas>
+                </div>
+                <div id="error-container" class="error-message"></div>
             </div>
-            <!-- Diff view -->
-            <div class="preview-container" id="view-diff" style="display:none;">
-                <canvas id="canvas-diff"></canvas>
-            </div>
-            <div id="error-container" class="error-message"></div>
             <div class="info-bar">
                 <span id="info">-</span>
-                <span id="diff-info" style="display:none;">Difference: <span id="diff-percent">-</span>%</span>
-            </div>
-        </div>
-        <div class="toolbar">
-            <button class="btn-primary" id="btn-render">Render</button>
-            <button class="btn-secondary" id="btn-svg">Export SVG</button>
-            <button class="btn-secondary" id="btn-png">Export PNG</button>
-            <button class="btn-secondary" id="btn-import">Import Reference</button>
-            <button class="btn-secondary" id="btn-clear-ref" style="display:none;">Clear Reference</button>
-            <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
-            <div class="examples">
-                <select id="examples">
-                    <option value="">Load Example...</option>
-                    <option value="simple">Simple Frame</option>
-                    <option value="nested">Nested Frames</option>
-                    <option value="gradient">Gradients</option>
-                </select>
+                <span id="diff-info" style="display:none;">Diff: <span id="diff-percent">-</span>%</span>
             </div>
         </div>
 
-        <!-- File Converter Panel -->
-        <div class="converter-panel">
-            <div class="converter-header">
-                <h2>3D File Converter</h2>
-                <span id="converter-status" class="status">Ready</span>
-            </div>
-            <div class="converter-content">
-                <!-- Import Section -->
-                <div class="converter-section">
-                    <h3>Import</h3>
-                    <div class="drop-zone" id="drop-zone">
-                        <div class="drop-zone-text">Drop a 3D file here or click to browse</div>
-                        <div class="drop-zone-formats">Supports: glTF, GLB, STEP, USD, Seed</div>
-                    </div>
-                    <input type="file" id="file-input-3d" accept=".gltf,.glb,.step,.stp,.usda,.usdc,.usd,.seed" style="display:none;">
-                    <div class="file-info" id="file-info">
-                        <div class="file-info-row">
-                            <span class="file-info-label">File:</span>
-                            <span class="file-info-value" id="file-name">-</span>
-                        </div>
-                        <div class="file-info-row">
-                            <span class="file-info-label">Size:</span>
-                            <span class="file-info-value" id="file-size">-</span>
-                        </div>
-                        <div class="file-info-row">
-                            <span class="file-info-label">Format:</span>
-                            <span class="file-info-value"><span id="file-format" class="format-badge">-</span></span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Scene Info Section -->
-                <div class="converter-section">
-                    <h3>Scene Info</h3>
-                    <div class="scene-stats" id="scene-stats">
-                        <div class="scene-stats-grid">
-                            <div class="stat-box">
-                                <div class="stat-value" id="stat-nodes">-</div>
-                                <div class="stat-label">Nodes</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-value" id="stat-geometries">-</div>
-                                <div class="stat-label">Geometries</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-value" id="stat-materials">-</div>
-                                <div class="stat-label">Materials</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-value" id="stat-roots">-</div>
-                                <div class="stat-label">Roots</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Export Section -->
-                <div class="converter-section">
-                    <h3>Export</h3>
-                    <div class="convert-options">
-                        <select id="export-format">
-                            <option value="">Select format...</option>
-                            <option value="seed">Seed (.seed)</option>
-                            <option value="gltf">glTF 2.0 (.glb)</option>
-                            <option value="step">STEP (.step)</option>
-                            <option value="usd">USD (.usda)</option>
-                        </select>
-                        <button class="btn-primary" id="btn-convert" disabled>Convert & Download</button>
-                    </div>
-                    <div id="convert-error" class="error-message" style="display:none; margin-top:12px; padding:8px; font-size:0.75rem;"></div>
-                </div>
-            </div>
-            <!-- 3D Viewer -->
-            <div class="viewer-3d" id="viewer-3d" style="display:none;">
-                <div class="viewer-3d-header">
-                    <h3>3D Preview</h3>
-                    <div class="viewer-3d-controls">
-                        <select id="renderer-mode">
-                            <option value="webgl">WebGL</option>
-                            <option value="canvas2d">Canvas 2D</option>
-                        </select>
-                        <label><input type="checkbox" id="wireframe-mode"> Wireframe</label>
-                        <label><input type="checkbox" id="auto-rotate"> Auto-rotate</label>
-                    </div>
-                </div>
-                <canvas id="canvas-3d" class="viewer-3d-canvas"></canvas>
-                <canvas id="canvas-3d-webgl" class="viewer-3d-canvas" style="display:none;"></canvas>
-                <div class="viewer-3d-info">
-                    <span id="mesh-info">Drag to rotate, scroll to zoom</span>
-                </div>
-            </div>
-        </div>
+        <!-- Hidden inputs -->
+        <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp">
     </div>
 
     <script type="module">
@@ -579,7 +559,6 @@
         const editor = document.getElementById('editor');
         const canvas = document.getElementById('canvas');
         const canvasCompare = document.getElementById('canvas-compare');
-        const canvasSlider = document.getElementById('canvas-slider');
         const canvasDiff = document.getElementById('canvas-diff');
         const errorContainer = document.getElementById('error-container');
         const info = document.getElementById('info');
@@ -588,9 +567,6 @@
         const fileInput = document.getElementById('file-input');
         const referenceImg = document.getElementById('reference-img');
         const referencePlaceholder = document.getElementById('reference-placeholder');
-        const sliderRef = document.getElementById('slider-ref');
-        const sliderOverlay = document.getElementById('slider-overlay');
-        const sliderHandle = document.getElementById('slider-handle');
         const btnClearRef = document.getElementById('btn-clear-ref');
 
         status.textContent = 'JS loaded...';
@@ -646,13 +622,16 @@
         });
 
         function updateView() {
-            document.getElementById('view-render').style.display = currentView === 'render' ? 'flex' : 'none';
+            document.getElementById('view-render').style.display = currentView === 'render' ? 'block' : 'none';
+            document.getElementById('view-3d').style.display = currentView === '3d' ? 'flex' : 'none';
             document.getElementById('view-compare').style.display = currentView === 'compare' ? 'flex' : 'none';
-            document.getElementById('view-slider').style.display = currentView === 'slider' ? 'flex' : 'none';
             document.getElementById('view-diff').style.display = currentView === 'diff' ? 'flex' : 'none';
             diffInfo.style.display = currentView === 'diff' && referenceDataUrl ? 'inline' : 'none';
 
-            if (currentView !== 'render' && lastRenderedDataUrl) {
+            if (currentView === '3d' && meshData) {
+                resizeCanvas3d();
+                render3d();
+            } else if (currentView !== 'render' && lastRenderedDataUrl) {
                 updateComparisonViews();
             }
         }
@@ -666,11 +645,6 @@
                 canvasCompare.width = img.width;
                 canvasCompare.height = img.height;
                 canvasCompare.getContext('2d').drawImage(img, 0, 0);
-
-                // Update slider canvas
-                canvasSlider.width = img.width;
-                canvasSlider.height = img.height;
-                canvasSlider.getContext('2d').drawImage(img, 0, 0);
 
                 // Update diff if reference exists
                 if (referenceDataUrl && currentView === 'diff') {
@@ -778,7 +752,6 @@
                 referenceImg.src = referenceDataUrl;
                 referenceImg.style.display = 'block';
                 referencePlaceholder.style.display = 'none';
-                sliderRef.src = referenceDataUrl;
                 btnClearRef.style.display = 'inline-block';
 
                 // Analyze image using Rust WASM analyzer
@@ -897,22 +870,8 @@
             referenceImg.src = '';
             referenceImg.style.display = 'none';
             referencePlaceholder.style.display = 'block';
-            sliderRef.src = '';
             btnClearRef.style.display = 'none';
             diffInfo.style.display = 'none';
-        });
-
-        // Slider functionality
-        let isDragging = false;
-        sliderHandle.addEventListener('mousedown', () => { isDragging = true; });
-        document.addEventListener('mouseup', () => { isDragging = false; });
-        document.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const rect = document.getElementById('view-slider').getBoundingClientRect();
-            const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-            const percent = (x / rect.width) * 100;
-            sliderOverlay.style.width = percent + '%';
-            sliderHandle.style.left = percent + '%';
         });
 
         // Event listeners
@@ -1042,12 +1001,10 @@
         let converterModule = null;
 
         // Set up file converter UI immediately (before WASM loads)
-        const converterStatus = document.getElementById('converter-status');
         const dropZone = document.getElementById('drop-zone');
         const fileInput3D = document.getElementById('file-input-3d');
         const fileInfo = document.getElementById('file-info');
         const fileName = document.getElementById('file-name');
-        const fileSize = document.getElementById('file-size');
         const fileFormat = document.getElementById('file-format');
         const exportFormat = document.getElementById('export-format');
         const btnConvert = document.getElementById('btn-convert');
@@ -1132,9 +1089,6 @@
             const writeFormats = module.getSupportedWriteFormats();
             console.log('Supported read formats:', readFormats);
             console.log('Supported write formats:', writeFormats);
-
-            converterStatus.textContent = 'Ready';
-            converterStatus.classList.add('ready');
         }
 
         async function handleFileImport(file) {
@@ -1144,8 +1098,8 @@
                 return;
             }
 
-            converterStatus.textContent = 'Reading...';
-            converterStatus.classList.remove('ready', 'error');
+            status.textContent = 'Reading...';
+            status.classList.remove('ready', 'error');
             convertError.style.display = 'none';
 
             try {
@@ -1176,20 +1130,20 @@
                 fileInfo.classList.add('visible');
 
                 // Read and get stats
-                converterStatus.textContent = 'Parsing...';
+                status.textContent = 'Parsing...';
                 currentScene = fileConverter.read(currentFileData);
 
                 // Update scene stats
                 updateSceneStats(currentScene);
 
-                converterStatus.textContent = 'Ready';
-                converterStatus.classList.add('ready');
+                status.textContent = 'Ready';
+                status.classList.add('ready');
                 btnConvert.disabled = !exportFormat.value;
 
             } catch (err) {
                 console.error('Import error:', err);
-                converterStatus.textContent = 'Error';
-                converterStatus.classList.add('error');
+                status.textContent = 'Error';
+                status.classList.add('error');
                 convertError.textContent = err.message || 'Failed to read file';
                 convertError.style.display = 'block';
                 currentScene = null;
@@ -1201,8 +1155,8 @@
         function doConvert() {
             if (!fileConverter || !currentScene || !exportFormat.value) return;
 
-            converterStatus.textContent = 'Converting...';
-            converterStatus.classList.remove('ready', 'error');
+            status.textContent = 'Converting...';
+            status.classList.remove('ready', 'error');
             convertError.style.display = 'none';
 
             try {
@@ -1236,13 +1190,13 @@
                 a.click();
                 URL.revokeObjectURL(url);
 
-                converterStatus.textContent = 'Ready';
-                converterStatus.classList.add('ready');
+                status.textContent = 'Ready';
+                status.classList.add('ready');
 
             } catch (err) {
                 console.error('Convert error:', err);
-                converterStatus.textContent = 'Error';
-                converterStatus.classList.add('error');
+                status.textContent = 'Error';
+                status.classList.add('error');
                 convertError.textContent = err.message || 'Conversion failed';
                 convertError.style.display = 'block';
             }
@@ -1252,7 +1206,6 @@
             document.getElementById('stat-nodes').textContent = scene.nodes?.length || 0;
             document.getElementById('stat-geometries').textContent = scene.geometries?.length || 0;
             document.getElementById('stat-materials').textContent = scene.materials?.length || 0;
-            document.getElementById('stat-roots').textContent = scene.roots?.length || 0;
         }
 
         function formatFileSize(bytes) {
@@ -1681,10 +1634,15 @@
             try {
                 meshData = fileConverter.getMeshData(currentFileData);
                 if (meshData && meshData.positions.length > 0) {
-                    viewer3d.style.display = 'block';
                     const vertCount = meshData.positions.length / 3;
                     const triCount = meshData.indices.length / 3;
                     meshInfo.textContent = `${vertCount.toLocaleString()} vertices, ${triCount.toLocaleString()} triangles`;
+
+                    // Switch to 3D tab
+                    document.querySelectorAll('.preview-tab').forEach(t => t.classList.remove('active'));
+                    document.querySelector('[data-view="3d"]').classList.add('active');
+                    currentView = '3d';
+                    updateView();
 
                     resizeCanvas3d();
 
