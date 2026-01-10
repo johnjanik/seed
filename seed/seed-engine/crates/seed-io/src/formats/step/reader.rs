@@ -550,16 +550,82 @@ impl<'a> StepConverter<'a> {
         mesh: &mut TriangleMesh,
     ) -> Result<()> {
         let transform = self.get_axis_transform(position_id);
-        let u_segments = 16;
-        let v_segments = 8;
+        let inverse_transform = transform.inverse();
+
+        // Collect boundary points in local coordinates
+        let mut local_points: Vec<Vec3> = Vec::new();
+
+        for bound_id in &face.bounds {
+            let bound = self.graph.get(*bound_id);
+            let loop_id = match bound {
+                Some(StepEntity::FaceOuterBound(b)) => b.bound,
+                Some(StepEntity::FaceBound(b)) => b.bound,
+                _ => continue,
+            };
+
+            if let Some(StepEntity::EdgeLoop(loop_entity)) = self.graph.get(loop_id) {
+                for edge_id in &loop_entity.edges {
+                    if let Some(point) = self.get_edge_start_point(*edge_id) {
+                        local_points.push(inverse_transform.transform_point3(point));
+                    }
+                    if let Some(point) = self.get_edge_end_point(*edge_id) {
+                        local_points.push(inverse_transform.transform_point3(point));
+                    }
+                }
+            }
+        }
+
+        if local_points.is_empty() {
+            return Ok(());
+        }
+
+        // Compute spherical coordinate bounds (theta = azimuth, phi = polar)
+        let mut theta_min = f32::MAX;
+        let mut theta_max = f32::MIN;
+        let mut phi_min = f32::MAX;
+        let mut phi_max = f32::MIN;
+
+        for p in &local_points {
+            let r = p.length();
+            if r > 1e-6 {
+                let theta = p.y.atan2(p.x);
+                let phi = (p.z / r).acos();
+
+                theta_min = theta_min.min(theta);
+                theta_max = theta_max.max(theta);
+                phi_min = phi_min.min(phi);
+                phi_max = phi_max.max(phi);
+            }
+        }
+
+        // Handle full sphere case
+        let theta_range = theta_max - theta_min;
+        let (theta_min, theta_max) = if theta_range < 0.1 || theta_range > 2.0 * PI - 0.1 {
+            (-PI, PI)
+        } else {
+            (theta_min, theta_max)
+        };
+
+        let phi_range = phi_max - phi_min;
+        let (phi_min, phi_max) = if phi_range < 0.1 || phi_range > PI - 0.1 {
+            (0.0, PI)
+        } else {
+            (phi_min, phi_max)
+        };
+
+        // Adaptive segments
+        let u_segments = ((theta_max - theta_min).abs() / (PI / 8.0)).ceil() as u32;
+        let u_segments = u_segments.max(4).min(32);
+        let v_segments = ((phi_max - phi_min).abs() / (PI / 8.0)).ceil() as u32;
+        let v_segments = v_segments.max(2).min(16);
 
         let base_idx = mesh.positions.len() as u32;
 
-        // Generate sphere vertices (partial based on face bounds)
+        // Generate sphere vertices within bounds
         for j in 0..=v_segments {
-            let phi = (j as f32 / v_segments as f32) * PI;
+            let phi = phi_min + (j as f32 / v_segments as f32) * (phi_max - phi_min);
             for i in 0..=u_segments {
-                let theta = (i as f32 / u_segments as f32) * 2.0 * PI;
+                let theta = theta_min + (i as f32 / u_segments as f32) * (theta_max - theta_min);
                 let x = radius * phi.sin() * theta.cos();
                 let y = radius * phi.sin() * theta.sin();
                 let z = radius * phi.cos();
@@ -572,10 +638,11 @@ impl<'a> StepConverter<'a> {
         // Generate indices
         for j in 0..v_segments {
             for i in 0..u_segments {
-                let i0 = base_idx + j * (u_segments + 1) + i;
-                let i1 = base_idx + j * (u_segments + 1) + i + 1;
-                let i2 = base_idx + (j + 1) * (u_segments + 1) + i + 1;
-                let i3 = base_idx + (j + 1) * (u_segments + 1) + i;
+                let row_size = u_segments + 1;
+                let i0 = base_idx + j * row_size + i;
+                let i1 = base_idx + j * row_size + i + 1;
+                let i2 = base_idx + (j + 1) * row_size + i + 1;
+                let i3 = base_idx + (j + 1) * row_size + i;
 
                 if face.same_sense {
                     mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
@@ -597,25 +664,77 @@ impl<'a> StepConverter<'a> {
         mesh: &mut TriangleMesh,
     ) -> Result<()> {
         let transform = self.get_axis_transform(position_id);
-        let segments = 24;
+        let inverse_transform = transform.inverse();
 
-        let (min_z, max_z) = self.get_face_z_bounds(face);
-        let height = max_z - min_z;
+        // Collect boundary points in local coordinates
+        let mut local_points: Vec<Vec3> = Vec::new();
 
-        if height <= 0.0 {
+        for bound_id in &face.bounds {
+            let bound = self.graph.get(*bound_id);
+            let loop_id = match bound {
+                Some(StepEntity::FaceOuterBound(b)) => b.bound,
+                Some(StepEntity::FaceBound(b)) => b.bound,
+                _ => continue,
+            };
+
+            if let Some(StepEntity::EdgeLoop(loop_entity)) = self.graph.get(loop_id) {
+                for edge_id in &loop_entity.edges {
+                    if let Some(point) = self.get_edge_start_point(*edge_id) {
+                        local_points.push(inverse_transform.transform_point3(point));
+                    }
+                    if let Some(point) = self.get_edge_end_point(*edge_id) {
+                        local_points.push(inverse_transform.transform_point3(point));
+                    }
+                }
+            }
+        }
+
+        if local_points.is_empty() {
             return Ok(());
         }
+
+        // Compute z bounds and angular bounds
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
+        let mut theta_min = f32::MAX;
+        let mut theta_max = f32::MIN;
+
+        for p in &local_points {
+            min_z = min_z.min(p.z);
+            max_z = max_z.max(p.z);
+            let theta = p.y.atan2(p.x);
+            theta_min = theta_min.min(theta);
+            theta_max = theta_max.max(theta);
+        }
+
+        let height = max_z - min_z;
+        if height <= 1e-6 {
+            return Ok(());
+        }
+
+        // Handle full cone case
+        let theta_range = theta_max - theta_min;
+        let (theta_min, theta_max) = if theta_range < 0.1 || theta_range > 2.0 * PI - 0.1 {
+            (-PI, PI)
+        } else {
+            (theta_min, theta_max)
+        };
+
+        // Adaptive segments
+        let angular_range = theta_max - theta_min;
+        let u_segments = ((angular_range.abs() / (PI / 12.0)).ceil() as u32).max(4).min(48);
+        let v_segments = ((height / (base_radius.abs().max(0.1) * 0.2)).ceil() as u32).max(2).min(24);
 
         let base_idx = mesh.positions.len() as u32;
 
         // Generate cone vertices
-        for j in 0..=1 {
-            let z = min_z + (j as f32) * height;
-            let r = base_radius + z * semi_angle.tan();
-            for i in 0..=segments {
-                let angle = (i as f32 / segments as f32) * 2.0 * PI;
-                let x = r * angle.cos();
-                let y = r * angle.sin();
+        for j in 0..=v_segments {
+            let z = min_z + (j as f32 / v_segments as f32) * height;
+            let r = (base_radius + z * semi_angle.tan()).abs();
+            for i in 0..=u_segments {
+                let theta = theta_min + (i as f32 / u_segments as f32) * angular_range;
+                let x = r * theta.cos();
+                let y = r * theta.sin();
                 let local = Vec3::new(x, y, z);
                 let world = transform.transform_point3(local);
                 mesh.positions.push(world);
@@ -623,16 +742,19 @@ impl<'a> StepConverter<'a> {
         }
 
         // Generate indices
-        for i in 0..segments {
-            let i0 = base_idx + i;
-            let i1 = base_idx + i + 1;
-            let i2 = base_idx + i + segments + 2;
-            let i3 = base_idx + i + segments + 1;
+        for j in 0..v_segments {
+            for i in 0..u_segments {
+                let row_size = u_segments + 1;
+                let i0 = base_idx + j * row_size + i;
+                let i1 = base_idx + j * row_size + i + 1;
+                let i2 = base_idx + (j + 1) * row_size + i + 1;
+                let i3 = base_idx + (j + 1) * row_size + i;
 
-            if face.same_sense {
-                mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
-            } else {
-                mesh.indices.extend_from_slice(&[i0, i2, i1, i0, i3, i2]);
+                if face.same_sense {
+                    mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
+                } else {
+                    mesh.indices.extend_from_slice(&[i0, i2, i1, i0, i3, i2]);
+                }
             }
         }
 
@@ -648,16 +770,84 @@ impl<'a> StepConverter<'a> {
         mesh: &mut TriangleMesh,
     ) -> Result<()> {
         let transform = self.get_axis_transform(position_id);
-        let u_segments = 24;
-        let v_segments = 12;
+        let inverse_transform = transform.inverse();
+
+        // Collect boundary points in local coordinates
+        let mut local_points: Vec<Vec3> = Vec::new();
+
+        for bound_id in &face.bounds {
+            let bound = self.graph.get(*bound_id);
+            let loop_id = match bound {
+                Some(StepEntity::FaceOuterBound(b)) => b.bound,
+                Some(StepEntity::FaceBound(b)) => b.bound,
+                _ => continue,
+            };
+
+            if let Some(StepEntity::EdgeLoop(loop_entity)) = self.graph.get(loop_id) {
+                for edge_id in &loop_entity.edges {
+                    if let Some(point) = self.get_edge_start_point(*edge_id) {
+                        local_points.push(inverse_transform.transform_point3(point));
+                    }
+                    if let Some(point) = self.get_edge_end_point(*edge_id) {
+                        local_points.push(inverse_transform.transform_point3(point));
+                    }
+                }
+            }
+        }
+
+        if local_points.is_empty() {
+            return Ok(());
+        }
+
+        // Compute toroidal coordinate bounds
+        // u = major angle (around the torus center), v = minor angle (around the tube)
+        let mut u_min = f32::MAX;
+        let mut u_max = f32::MIN;
+        let mut v_min = f32::MAX;
+        let mut v_max = f32::MIN;
+
+        for p in &local_points {
+            // u is the angle in the XY plane from the torus center
+            let u = p.y.atan2(p.x);
+            u_min = u_min.min(u);
+            u_max = u_max.max(u);
+
+            // v is the angle around the tube cross-section
+            // Project point onto the tube cross-section plane
+            let dist_from_axis = (p.x * p.x + p.y * p.y).sqrt();
+            let tube_x = dist_from_axis - major_radius;
+            let tube_y = p.z;
+            let v = tube_y.atan2(tube_x);
+            v_min = v_min.min(v);
+            v_max = v_max.max(v);
+        }
+
+        // Handle full torus case
+        let u_range = u_max - u_min;
+        let (u_min, u_max) = if u_range < 0.1 || u_range > 2.0 * PI - 0.1 {
+            (-PI, PI)
+        } else {
+            (u_min, u_max)
+        };
+
+        let v_range = v_max - v_min;
+        let (v_min, v_max) = if v_range < 0.1 || v_range > 2.0 * PI - 0.1 {
+            (-PI, PI)
+        } else {
+            (v_min, v_max)
+        };
+
+        // Adaptive segments
+        let u_segments = (((u_max - u_min).abs() / (PI / 12.0)).ceil() as u32).max(4).min(48);
+        let v_segments = (((v_max - v_min).abs() / (PI / 6.0)).ceil() as u32).max(4).min(24);
 
         let base_idx = mesh.positions.len() as u32;
 
-        // Generate torus vertices
+        // Generate torus vertices within bounds
         for j in 0..=v_segments {
-            let v = (j as f32 / v_segments as f32) * 2.0 * PI;
+            let v = v_min + (j as f32 / v_segments as f32) * (v_max - v_min);
             for i in 0..=u_segments {
-                let u = (i as f32 / u_segments as f32) * 2.0 * PI;
+                let u = u_min + (i as f32 / u_segments as f32) * (u_max - u_min);
                 let x = (major_radius + minor_radius * v.cos()) * u.cos();
                 let y = (major_radius + minor_radius * v.cos()) * u.sin();
                 let z = minor_radius * v.sin();
@@ -670,10 +860,11 @@ impl<'a> StepConverter<'a> {
         // Generate indices
         for j in 0..v_segments {
             for i in 0..u_segments {
-                let i0 = base_idx + j * (u_segments + 1) + i;
-                let i1 = base_idx + j * (u_segments + 1) + i + 1;
-                let i2 = base_idx + (j + 1) * (u_segments + 1) + i + 1;
-                let i3 = base_idx + (j + 1) * (u_segments + 1) + i;
+                let row_size = u_segments + 1;
+                let i0 = base_idx + j * row_size + i;
+                let i1 = base_idx + j * row_size + i + 1;
+                let i2 = base_idx + (j + 1) * row_size + i + 1;
+                let i3 = base_idx + (j + 1) * row_size + i;
 
                 if face.same_sense {
                     mesh.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
@@ -787,34 +978,6 @@ impl<'a> StepConverter<'a> {
         }
     }
 
-    fn get_face_z_bounds(&self, face: &AdvancedFace) -> (f32, f32) {
-        let mut min_z = f32::MAX;
-        let mut max_z = f32::MIN;
-
-        for bound_id in &face.bounds {
-            let bound = self.graph.get(*bound_id);
-            let loop_id = match bound {
-                Some(StepEntity::FaceOuterBound(b)) => b.bound,
-                Some(StepEntity::FaceBound(b)) => b.bound,
-                _ => continue,
-            };
-
-            if let Some(StepEntity::EdgeLoop(loop_entity)) = self.graph.get(loop_id) {
-                for edge_id in &loop_entity.edges {
-                    if let Some(point) = self.get_edge_start_point(*edge_id) {
-                        min_z = min_z.min(point.z);
-                        max_z = max_z.max(point.z);
-                    }
-                }
-            }
-        }
-
-        if min_z > max_z {
-            (0.0, 1.0)
-        } else {
-            (min_z, max_z)
-        }
-    }
 }
 
 #[cfg(test)]
