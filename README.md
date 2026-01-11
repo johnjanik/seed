@@ -49,4 +49,11 @@ wasm-pack build --target web
 
 🚧 **Early Development** - Core architecture in place, implementations in progress.
 
-See [seed-engine-tds.md](../seed-engine-tds.md) for the full technical design specification.
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+
+This means:
+- You can use, modify, and distribute this software
+- If you modify and distribute it, you must release your changes under AGPL-3.0
+- If you run a modified version on a server, you must make the source code available to users
